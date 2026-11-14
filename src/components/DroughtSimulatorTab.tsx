@@ -1,19 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   CloudSun,
   CloudRain,
-  AlertOctagon,
-  TrendingDown,
   ShieldCheck,
-  Calculator,
-  ArrowRightLeft,
-  Layers,
-  Info,
-  Droplet,
-  Mountain
+  Mountain,
+  Droplets,
+  AlertTriangle
 } from 'lucide-react';
 import { PropertyProfile } from '../types';
 import { calculateReliefRainImpact } from '../utils/geoMap';
+import { ToggleSwitch } from './ToggleSwitch';
 
 interface DroughtSimulatorTabProps {
   profile: PropertyProfile;
@@ -24,162 +20,162 @@ export const DroughtSimulatorTab: React.FC<DroughtSimulatorTabProps> = ({
   profile,
   onUpdateProfile
 }) => {
-  // Drought Simulator state
+  const [subTab, setSubTab] = useState<'drought' | 'rain_relief'>('drought');
+
+  // Drought settings
   const [simulatedDays, setSimulatedDays] = useState<15 | 30 | 60 | 90>(60);
-  const [tempAnomalyC, setTempAnomalyC] = useState<number>(2.0);
+  const [tempAnomalyC, setTempAnomalyC] = useState<number>(1.5);
   const [useMulching, setUseMulching] = useState<boolean>(true);
   const [useNightPulse, setUseNightPulse] = useState<boolean>(true);
   const [useOsmoticDeficit, setUseOsmoticDeficit] = useState<boolean>(profile.id === 'oeste');
 
-  // Rain Catchment Calculator state
+  // Rain & Terrain settings (simplified without confusing ceramic/metallic tile material selector)
   const [catchmentAreaM2, setCatchmentAreaM2] = useState<number>(profile.roofCatchmentAreaM2);
   const [rainEventMm, setRainEventMm] = useState<number>(45);
-  const [runoffCoeff, setRunoffCoeff] = useState<number>(profile.catchmentEfficiency);
   const [autoRedistributeRain, setAutoRedistributeRain] = useState<boolean>(true);
   const [hasContourDitches, setHasContourDitches] = useState<boolean>(false);
   const [localSlopePct, setLocalSlopePct] = useState<number>(
     profile.terrainSlopePct ?? (profile.id === 'oeste' ? 4 : 16)
   );
 
-  // Sync catchment area when switching profile
-  React.useEffect(() => {
+  useEffect(() => {
     setCatchmentAreaM2(profile.roofCatchmentAreaM2);
-    setRunoffCoeff(profile.catchmentEfficiency);
     setUseOsmoticDeficit(profile.id === 'oeste');
     setLocalSlopePct(profile.terrainSlopePct ?? (profile.id === 'oeste' ? 4 : 16));
-  }, [profile.id, profile.roofCatchmentAreaM2, profile.catchmentEfficiency, profile.terrainSlopePct]);
+  }, [profile.id, profile.roofCatchmentAreaM2, profile.terrainSlopePct]);
 
   const activeSlopePct = profile.terrainSlopePct ?? localSlopePct;
   const handleSlopeChange = (nextSlope: number) => {
     setLocalSlopePct(nextSlope);
     if (onUpdateProfile) {
       const profileType =
-        nextSlope <= 5
-          ? 'plano'
-          : nextSlope <= 12
-          ? 'ondulado'
-          : nextSlope <= 22
-          ? 'morro'
-          : 'escarpado';
-      onUpdateProfile({
-        ...profile,
-        terrainSlopePct: nextSlope,
-        terrainProfileType: profileType
-      });
+        nextSlope <= 5 ? 'plano' : nextSlope <= 12 ? 'ondulado' : nextSlope <= 22 ? 'morro' : 'escarpado';
+      onUpdateProfile({ ...profile, terrainSlopePct: nextSlope, terrainProfileType: profileType });
     }
   };
 
-  // Reservoir totals (Apparent vs. Real after Siltation)
-  const totalNominalM3 = profile.reservoirs.reduce((acc, r) => acc + r.nominalCapacityM3, 0);
+  // Calculations
   const totalApparentM3 = profile.reservoirs.reduce((acc, r) => acc + r.currentApparentVolumeM3, 0);
   const totalRealM3 = profile.reservoirs.reduce((acc, r) => acc + r.currentRealVolumeM3, 0);
-  const hiddenSiltationLossM3 = totalApparentM3 - totalRealM3;
+  const hiddenSiltationM3 = totalApparentM3 - totalRealM3;
 
-  // Daily baseline demand from sectors (in m³/day)
   const baseDailyDripM3 =
     profile.sectors.reduce((acc, s) => acc + s.plantsCount * s.targetLitersPerPlantDay, 0) / 1000;
-
-  // Temperature anomaly increases ET0 by ~6% per °C
   const climateMultiplier = 1 + tempAnomalyC * 0.06;
 
-  // Reservoir surface evaporation loss (m³/day)
   const dailyEvapLossM3 = profile.reservoirs.reduce((acc, r) => {
     const surfaceFactor = r.hasCoverOrGeomembrane ? 0.8 : 4.2;
     return acc + (r.evaporationLossMmDay * surfaceFactor * climateMultiplier) / 10;
   }, 0);
 
-  // Scenario 1: Conventional Sprinkler / Unmanaged ("No Olho" — 2.38x drip consumption per Jadin & Jacquemart, 1978)
   const dailyConventionalM3 = baseDailyDripM3 * 2.15 * climateMultiplier + dailyEvapLossM3 * 1.3;
-
-  // Scenario 2: Standard Drip without conservation measures
-  const dailyStandardDripM3 = baseDailyDripM3 * climateMultiplier + dailyEvapLossM3;
-
-  // Scenario 3: AgroCiclo AI Smart Drip + Selected Conservation Measures
   const savingFactor =
-    (useMulching ? 0.84 : 1.0) *
-    (useNightPulse ? 0.88 : 1.0) *
-    (useOsmoticDeficit ? 0.85 : 1.0);
+    (useMulching ? 0.84 : 1.0) * (useNightPulse ? 0.88 : 1.0) * (useOsmoticDeficit ? 0.85 : 1.0);
+  const dailySmartM3 = baseDailyDripM3 * climateMultiplier * savingFactor + dailyEvapLossM3 * 0.75;
 
-  const dailySmartAgroCicloM3 = baseDailyDripM3 * climateMultiplier * savingFactor + dailyEvapLossM3 * 0.75;
+  const autonomyConventionalDays = Math.floor(totalRealM3 / Math.max(1, dailyConventionalM3));
+  const autonomySmartDays = Math.floor(totalRealM3 / Math.max(1, dailySmartM3));
+  const gainedDays = Math.max(0, autonomySmartDays - autonomyConventionalDays);
 
-  // Autonomy in Days (using REAL volume, vs the dangerous illusion of Apparent Volume)
-  const autonomyApparentIllusionDays = Math.floor(totalApparentM3 / dailyConventionalM3);
-  const autonomyConventionalRealDays = Math.floor(totalRealM3 / dailyConventionalM3);
-  const autonomyStandardDripDays = Math.floor(totalRealM3 / dailyStandardDripM3);
-  const autonomySmartDays = Math.floor(totalRealM3 / dailySmartAgroCicloM3);
+  const balanceSmartM3 = Math.round(totalRealM3 - dailySmartM3 * simulatedDays);
+  const waterSavedPeriodM3 = Math.max(
+    0,
+    Math.round((dailyConventionalM3 - dailySmartM3) * simulatedDays)
+  );
 
-  // Cumulative consumption over simulatedDays
-  const cumulativeConventionalM3 = Math.round(dailyConventionalM3 * simulatedDays);
-  const cumulativeSmartM3 = Math.round(dailySmartAgroCicloM3 * simulatedDays);
-  const waterSavedInPeriodM3 = Math.max(0, cumulativeConventionalM3 - cumulativeSmartM3);
-
-  // Deficit at end of simulated period
-  const balanceConventionalM3 = Math.round(totalRealM3 - cumulativeConventionalM3);
-  const balanceSmartM3 = Math.round(totalRealM3 - cumulativeSmartM3);
-
-  // Rain Catchment Formula (PDF 2 Item 4.5: Volume L = Area m² * Precipitação mm * Coeficiente)
-  const potentialRainLiters = Math.round(catchmentAreaM2 * rainEventMm * runoffCoeff);
+  // Rain catchment (clean fixed agronomic utilization rate ~85% discarding first flush)
+  const potentialRainLiters = Math.round(catchmentAreaM2 * rainEventMm * 0.85);
   const potentialRainM3 = Math.round((potentialRainLiters / 1000) * 10) / 10;
-  const extraDaysFromRain = Math.round((potentialRainM3 / dailySmartAgroCicloM3) * 10) / 10;
+  const extraDaysFromRain = Math.round((potentialRainM3 / Math.max(1, dailySmartM3)) * 10) / 10;
 
-  // Cisterna das Barcaças capacity check for overflow alert
-  const mainCistern = profile.reservoirs.find((r) => r.type === 'cisterna_barcaca') || profile.reservoirs[1];
-  const freeCisternSpaceM3 = Math.max(0, mainCistern.nominalCapacityM3 - mainCistern.currentRealVolumeM3);
-  const overflowM3 = Math.max(0, potentialRainM3 - freeCisternSpaceM3);
+  const mainCistern =
+    profile.reservoirs.find((r) => r.type === 'cisterna_barcaca') || profile.reservoirs[0];
+  const freeCisternM3 = Math.max(0, mainCistern.nominalCapacityM3 - mainCistern.currentRealVolumeM3);
+  const overflowM3 = Math.max(0, potentialRainM3 - freeCisternM3);
 
-  // Generate SVG chart points for 0 to simulatedDays
-  const steps = 6;
-  const chartPoints = Array.from({ length: steps + 1 }, (_, i) => {
-    const day = Math.round((simulatedDays / steps) * i);
-    const remConv = Math.max(0, Math.round(totalRealM3 - dailyConventionalM3 * day));
-    const remStd = Math.max(0, Math.round(totalRealM3 - dailyStandardDripM3 * day));
-    const remSmart = Math.max(0, Math.round(totalRealM3 - dailySmartAgroCicloM3 * day));
-    return { day, remConv, remStd, remSmart };
+  const reliefImpact = calculateReliefRainImpact({
+    slopePct: activeSlopePct,
+    rainMm: rainEventMm,
+    cacaoAreaHa: profile.cacaoAreaHa,
+    hasMulchingOrCabruca: useMulching,
+    hasContourDitches,
+    dailyDemandM3: dailySmartM3
   });
 
+  const maxAutonomyBar = Math.max(simulatedDays, autonomySmartDays, 30);
+
   return (
-    <div className="space-y-8">
-      {/* SECTION 1: SIMULADOR DE SECA E EL NIÑO */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="p-6 bg-gradient-to-r from-amber-950 via-amber-900 to-slate-900 text-white">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-            <div>
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/30 text-amber-300 text-xs font-bold uppercase">
-                <CloudSun className="w-4 h-4" />
-                Projeção Climática & Planejamento de Estiagem
-              </div>
-              <h2 className="text-xl font-bold mt-2">
-                Estresse Hídrico, Autonomia Real das Reservas e Comparativo de Manejo ({profile.municipality}/BA)
-              </h2>
-              <p className="text-xs text-amber-100/90 mt-1 max-w-3xl">
-                Cálculos baseados nas taxas de evapotranspiração local, capacidade útil dos reservatórios e demanda hídrica por estágio fenológico do cacaueiro.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 bg-black/30 p-2 rounded-xl border border-white/10 self-start">
-              {([15, 30, 60, 90] as const).map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setSimulatedDays(d)}
-                  className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all ${
-                    simulatedDays === d
-                      ? 'bg-amber-500 text-slate-950 shadow-sm'
-                      : 'text-amber-100 hover:bg-white/10'
-                  }`}
-                >
-                  {d} Dias Sem Chuva
-                </button>
-              ))}
-            </div>
-          </div>
+    <div className="space-y-5">
+      {/* Segmented Navigation Bar */}
+      <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-black text-slate-900 dark:text-white">
+            Simulador de Seca &amp; Água da Chuva
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Veja quantos dias sua reserva aguenta e quanto pode captar na próxima chuva
+          </p>
         </div>
 
-        <div className="p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left Controls (4 cols) */}
-          <div className="lg:col-span-4 space-y-5 bg-slate-50 p-5 rounded-xl border border-slate-200">
+        <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-xs font-bold">
+          <button
+            type="button"
+            onClick={() => setSubTab('drought')}
+            className={`px-4 py-2 rounded-lg inline-flex items-center gap-1.5 transition-all ${
+              subTab === 'drought'
+                ? 'bg-amber-500 text-slate-950 shadow-sm'
+                : 'text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            <CloudSun className="w-4 h-4" />
+            1. Teste de Seca
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('rain_relief')}
+            className={`px-4 py-2 rounded-lg inline-flex items-center gap-1.5 transition-all ${
+              subTab === 'rain_relief'
+                ? 'bg-sky-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            <CloudRain className="w-4 h-4" />
+            2. Chuva &amp; Relevo
+          </button>
+        </div>
+      </div>
+
+      {/* TAB 1: DROUGHT AUTONOMY */}
+      {subTab === 'drought' ? (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          {/* Left Controls (5 cols) */}
+          <div className="lg:col-span-5 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm p-5 space-y-5">
             <div>
-              <div className="flex justify-between text-xs font-bold text-slate-700 mb-1">
-                <span>Anomalia Térmica (El Niño / Veranico):</span>
-                <span className="text-amber-700">+{tempAnomalyC.toFixed(1)} °C acima da média</span>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">
+                Testar quantos dias sem chuva?
+              </label>
+              <div className="grid grid-cols-4 gap-2">
+                {([15, 30, 60, 90] as const).map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setSimulatedDays(d)}
+                    className={`py-2.5 rounded-xl text-xs font-black border transition-all ${
+                      simulatedDays === d
+                        ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-sm'
+                        : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                    }`}
+                  >
+                    {d} dias
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="flex justify-between text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                <span>Calor acima do normal (Veranico):</span>
+                <span className="text-amber-600 dark:text-amber-400">+{tempAnomalyC.toFixed(1)}°C</span>
               </div>
               <input
                 type="range"
@@ -188,551 +184,365 @@ export const DroughtSimulatorTab: React.FC<DroughtSimulatorTabProps> = ({
                 step={0.5}
                 value={tempAnomalyC}
                 onChange={(e) => setTempAnomalyC(parseFloat(e.target.value))}
-                className="w-full accent-amber-600 cursor-pointer"
+                className="w-full accent-amber-500 cursor-pointer"
               />
-              <div className="flex justify-between text-xs text-slate-500 mt-0.5">
-                <span>Clima Normal (+0°C)</span>
-                <span>Super El Niño (+4°C)</span>
-              </div>
             </div>
 
-            <div className="pt-3 border-t border-slate-200 space-y-2.5">
-              <div className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                Medidas de Economia Ativadas na Simulação:
+            <div className="space-y-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <div className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                Economias ligadas no campo:
               </div>
 
-              <label className="flex items-start gap-2.5 cursor-pointer p-2.5 rounded-lg bg-white border border-slate-200 hover:border-emerald-400">
-                <input
-                  type="checkbox"
-                  checked={useMulching}
-                  onChange={(e) => setUseMulching(e.target.checked)}
-                  className="mt-0.5 accent-emerald-600 rounded"
-                />
-                <div className="text-xs">
-                  <div className="font-bold text-slate-900">Cobertura Morta (Pseudocaule Bananeira / Casca)</div>
-                  <div className="text-slate-500">-16% evaporação superficial do solo (Orchard & Saltos, 1988)</div>
+              <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <div>
+                  <div className="text-xs font-bold text-slate-900 dark:text-white">
+                    Cobertura Morta / Palhada
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Segura umidade no pé (-16% perda)
+                  </div>
                 </div>
-              </label>
-
-              <label className="flex items-start gap-2.5 cursor-pointer p-2.5 rounded-lg bg-white border border-slate-200 hover:border-emerald-400">
-                <input
-                  type="checkbox"
-                  checked={useNightPulse}
-                  onChange={(e) => setUseNightPulse(e.target.checked)}
-                  className="mt-0.5 accent-emerald-600 rounded"
-                />
-                <div className="text-xs">
-                  <div className="font-bold text-slate-900">Pulsos Noturnos + Sincronia Microclima</div>
-                  <div className="text-slate-500">-12% perda evaporativa e -38% tarifa energética</div>
-                </div>
-              </label>
-
-              <label className="flex items-start gap-2.5 cursor-pointer p-2.5 rounded-lg bg-white border border-slate-200 hover:border-emerald-400">
-                <input
-                  type="checkbox"
-                  checked={useOsmoticDeficit}
-                  onChange={(e) => setUseOsmoticDeficit(e.target.checked)}
-                  className="mt-0.5 accent-emerald-600 rounded"
-                />
-                <div className="text-xs">
-                  <div className="font-bold text-slate-900">Déficit Controlado (Ajuste Osmótico Ativo)</div>
-                  <div className="text-slate-500">-15% lâmina nos talhões adultos (Moser et al., 2010)</div>
-                </div>
-              </label>
-            </div>
-
-            {/* Alerta do Assoreamento Oculto */}
-            <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-xs space-y-1">
-              <div className="font-bold text-amber-900 flex items-center gap-1.5">
-                <AlertOctagon className="w-4 h-4 text-amber-700 shrink-0" />
-                Desconto de Assoreamento Ativo!
+                <ToggleSwitch checked={useMulching} onChange={setUseMulching} size="sm" />
               </div>
-              <p className="text-amber-800">
-                Olhando apenas o nível da água, o produtor acha que tem <strong>{totalApparentM3.toLocaleString('pt-BR')} m³</strong>, mas há <strong>{hiddenSiltationLossM3.toLocaleString('pt-BR')} m³ de lodo/sedimentos</strong> no fundo dos açudes! Volume útil real considerado: <strong>{totalRealM3.toLocaleString('pt-BR')} m³</strong>.
-              </p>
+
+              <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <div>
+                  <div className="text-xs font-bold text-slate-900 dark:text-white">
+                    Regar Só à Noite
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Evita evaporação pelo sol (-12%)
+                  </div>
+                </div>
+                <ToggleSwitch checked={useNightPulse} onChange={setUseNightPulse} size="sm" activeColor="sky" />
+              </div>
+
+              <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <div>
+                  <div className="text-xs font-bold text-slate-900 dark:text-white">
+                    Economia na Seca (-15%)
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Diminui água nos pés adultos
+                  </div>
+                </div>
+                <ToggleSwitch checked={useOsmoticDeficit} onChange={setUseOsmoticDeficit} size="sm" activeColor="amber" />
+              </div>
             </div>
           </div>
 
-          {/* Right Results & Chart (8 cols) */}
-          <div className="lg:col-span-8 flex flex-col justify-between space-y-5">
-            {/* Top 3 Comparison Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="p-4 rounded-xl bg-rose-50 border border-rose-200">
-                <div className="text-xs font-bold text-rose-800 uppercase">Aspersão / Sem Gestão</div>
-                <div className="text-2xl font-extrabold text-rose-950 mt-1">
-                  {autonomyConventionalRealDays} dias
+          {/* Right Results (7 cols) */}
+          <div className="lg:col-span-7 space-y-5">
+            {/* Hero Visual Autonomy Comparison */}
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm p-5 space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <span className="text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                    Resultado para sua reserva útil real
+                  </span>
+                  <div className="text-3xl font-black text-slate-900 dark:text-white mt-0.5">
+                    {autonomySmartDays} dias de água{' '}
+                    <span className="text-base font-bold text-emerald-600 dark:text-emerald-400">
+                      (+{gainedDays} dias extras)
+                    </span>
+                  </div>
                 </div>
-                <div className="text-xs text-rose-700 mt-0.5">
-                  Ilusão visual s/ assoreamento: {autonomyApparentIllusionDays} dias
+
+                <span
+                  className={`px-3.5 py-2 rounded-xl text-xs font-black inline-flex items-center gap-1.5 ${
+                    balanceSmartM3 >= 0
+                      ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-200'
+                      : 'bg-amber-100 dark:bg-amber-950/60 text-amber-900 dark:text-amber-200'
+                  }`}
+                >
+                  {balanceSmartM3 >= 0 ? (
+                    <>
+                      <ShieldCheck className="w-4 h-4" />
+                      Passa dos {simulatedDays} dias com folga!
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle className="w-4 h-4" />
+                      Faltará água no dia {autonomySmartDays + 1}
+                    </>
+                  )}
+                </span>
+              </div>
+
+              {/* Simple Visual Comparison Bars */}
+              <div className="space-y-3 pt-2">
+                <div className="space-y-1">
+                  <div className="flex justify-between text-xs font-bold">
+                    <span className="text-emerald-700 dark:text-emerald-400">
+                      Com Gotejamento AgroCiclo ({dailySmartM3.toFixed(1)} m³/dia)
+                    </span>
+                    <span className="text-slate-900 dark:text-white">{autonomySmartDays} dias</span>
+                  </div>
+                  <div className="w-full h-5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden p-0.5">
+                    <div
+                      style={{
+                        width: `${Math.min(100, Math.round((autonomySmartDays / maxAutonomyBar) * 100))}%`
+                      }}
+                      className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all duration-300"
+                    />
+                  </div>
                 </div>
-                <div className="mt-2 pt-2 border-t border-rose-200 text-xs font-semibold text-rose-900">
-                  {balanceConventionalM3 < 0
-                    ? `Déficit de ${Math.abs(balanceConventionalM3).toLocaleString('pt-BR')} m³ em ${simulatedDays}d`
-                    : `Sobra: ${balanceConventionalM3.toLocaleString('pt-BR')} m³`}
+
+                <div className="space-y-1">
+                  <div className="flex justify-between text-xs font-bold">
+                    <span className="text-slate-500 dark:text-slate-400">
+                      Rega Comum / Aspersão ({dailyConventionalM3.toFixed(1)} m³/dia)
+                    </span>
+                    <span className="text-rose-600 dark:text-rose-400">{autonomyConventionalDays} dias</span>
+                  </div>
+                  <div className="w-full h-5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden p-0.5">
+                    <div
+                      style={{
+                        width: `${Math.min(100, Math.round((autonomyConventionalDays / maxAutonomyBar) * 100))}%`
+                      }}
+                      className="h-full rounded-full bg-rose-400 dark:bg-rose-500/80 transition-all duration-300"
+                    />
+                  </div>
                 </div>
               </div>
 
-              <div className="p-4 rounded-xl bg-sky-50 border border-sky-200">
-                <div className="text-xs font-bold text-sky-800 uppercase">Gotejamento Simples</div>
-                <div className="text-2xl font-extrabold text-sky-950 mt-1">
-                  {autonomyStandardDripDays} dias
-                </div>
-                <div className="text-xs text-sky-700 mt-0.5">
-                  Consumo: {dailyStandardDripM3.toFixed(1)} m³/dia
-                </div>
-                <div className="mt-2 pt-2 border-t border-sky-200 text-xs font-semibold text-sky-900">
-                  +{autonomyStandardDripDays - autonomyConventionalRealDays} dias vs. aspersão
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl bg-emerald-50 border-2 border-emerald-500 shadow-sm">
-                <div className="text-xs font-bold text-emerald-800 uppercase flex items-center justify-between">
-                  <span>AgroCiclo AI (Gotejo + IA)</span>
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                </div>
-                <div className="text-2xl font-extrabold text-emerald-950 mt-1">
-                  {autonomySmartDays} dias
-                </div>
-                <div className="text-xs text-emerald-700 mt-0.5">
-                  Consumo otimizado: {dailySmartAgroCicloM3.toFixed(1)} m³/dia
-                </div>
-                <div className="mt-2 pt-2 border-t border-emerald-200 text-xs font-bold text-emerald-900">
-                  {balanceSmartM3 >= 0
-                    ? `Reserva Segura (+${balanceSmartM3.toLocaleString('pt-BR')} m³ ao fim de ${simulatedDays}d)`
-                    : `Déficit reduzido a ${Math.abs(balanceSmartM3).toLocaleString('pt-BR')} m³ (Ativar Contingência)`}
-                </div>
+              <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-900 dark:text-emerald-200 flex items-center justify-between">
+                <span>Economia em {simulatedDays} dias sem chuva:</span>
+                <strong className="text-sm">{waterSavedPeriodM3.toLocaleString('pt-BR')} m³ salvos</strong>
               </div>
             </div>
 
-            {/* Visual Depletion Curve (SVG) */}
-            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                  Curva de Esgotamento do Estoque Hídrico Útil ({totalRealM3.toLocaleString('pt-BR')} m³) em {simulatedDays} Dias
-                </h4>
-                <div className="flex items-center gap-4 text-xs font-semibold">
-                  <span className="flex items-center gap-1.5 text-emerald-700">
-                    <span className="w-3 h-3 rounded-sm bg-emerald-600 inline-block" />
-                    AgroCiclo AI ({cumulativeSmartM3.toLocaleString('pt-BR')} m³)
-                  </span>
-                  <span className="flex items-center gap-1.5 text-sky-700">
-                    <span className="w-3 h-3 rounded-sm bg-sky-500 inline-block" />
-                    Gotejo Simples
-                  </span>
-                  <span className="flex items-center gap-1.5 text-rose-700">
-                    <span className="w-3 h-3 rounded-sm bg-rose-500 inline-block" />
-                    Aspersão / Sem Gestão ({cumulativeConventionalM3.toLocaleString('pt-BR')} m³)
-                  </span>
-                </div>
+            {/* Simplified Reservoirs & Siltation Card */}
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                  <Droplets className="w-4 h-4 text-sky-600" />
+                  Seus Reservatórios (Água Real vs. Lodo no Fundo)
+                </h3>
+                <span className="text-xs font-bold text-amber-700 dark:text-amber-400">
+                  -{hiddenSiltationM3.toLocaleString('pt-BR')} m³ de lodo descontados
+                </span>
               </div>
 
-              <div className="grid grid-cols-7 gap-2 items-end h-44 pt-4 px-2 border-b border-slate-300">
-                {chartPoints.map((pt) => {
-                  const pctConv = Math.round((pt.remConv / totalRealM3) * 100);
-                  const pctStd = Math.round((pt.remStd / totalRealM3) * 100);
-                  const pctSmart = Math.round((pt.remSmart / totalRealM3) * 100);
-
+              <div className="space-y-2.5">
+                {profile.reservoirs.map((res) => {
+                  const siltM3 = res.currentApparentVolumeM3 - res.currentRealVolumeM3;
+                  const fillPct = Math.round((res.currentRealVolumeM3 / Math.max(1, res.nominalCapacityM3)) * 100);
                   return (
-                    <div key={pt.day} className="flex flex-col items-center h-full justify-end group">
-                      <div className="w-full flex items-end justify-center gap-1 h-32">
-                        {/* Bar 1: Conventional */}
-                        <div
-                          style={{ height: `${Math.max(4, pctConv)}%` }}
-                          className="w-2.5 sm:w-3.5 bg-rose-500 rounded-t transition-all"
-                          title={`Dia ${pt.day} Aspersão: ${pt.remConv} m³ (${pctConv}%)`}
-                        />
-                        {/* Bar 2: Standard Drip */}
-                        <div
-                          style={{ height: `${Math.max(4, pctStd)}%` }}
-                          className="w-2.5 sm:w-3.5 bg-sky-500 rounded-t transition-all"
-                          title={`Dia ${pt.day} Gotejo Simples: ${pt.remStd} m³ (${pctStd}%)`}
-                        />
-                        {/* Bar 3: Smart AgroCiclo */}
-                        <div
-                          style={{ height: `${Math.max(4, pctSmart)}%` }}
-                          className="w-2.5 sm:w-3.5 bg-emerald-600 rounded-t transition-all"
-                          title={`Dia ${pt.day} AgroCiclo AI: ${pt.remSmart} m³ (${pctSmart}%)`}
-                        />
+                    <div key={res.id} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-slate-800 dark:text-slate-100">{res.name}</span>
+                        <span className="font-black text-sky-700 dark:text-sky-400">
+                          {res.currentRealVolumeM3.toLocaleString('pt-BR')} m³ reais
+                        </span>
                       </div>
-                      <div className="text-xs font-semibold text-slate-600 mt-2">Dia {pt.day}</div>
+                      <div className="w-full h-3 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden flex">
+                        <div style={{ width: `${fillPct}%` }} className="bg-sky-500 h-full" />
+                        <div style={{ width: `${res.siltationLossPct}%` }} className="bg-amber-500 h-full" />
+                      </div>
+                      <div className="flex justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                        <span>Capacidade: {res.nominalCapacityM3.toLocaleString('pt-BR')} m³</span>
+                        {siltM3 > 0 && <span className="text-amber-700 dark:text-amber-400">Lodo no fundo: {siltM3} m³</span>}
+                      </div>
                     </div>
                   );
                 })}
               </div>
-
-              <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs text-slate-600">
-                <span>
-                  Economia total acumulada em {simulatedDays} dias:{' '}
-                  <strong className="text-emerald-700">{waterSavedInPeriodM3.toLocaleString('pt-BR')} m³ poupados</strong>{' '}
-                  ({(waterSavedInPeriodM3 * 1000).toLocaleString('pt-BR')} litros).
-                </span>
-                <span className="inline-flex items-center gap-1 text-slate-500">
-                  <Info className="w-3.5 h-3.5" />
-                  Incerteza climática do modelo sazonal: ±12%
-                </span>
-              </div>
             </div>
           </div>
         </div>
-      </div>
-
-      {/* SECTION 2: CAPTAÇÃO INTELIGENTE DE CHUVA E AUDITORIA DE RESERVATÓRIOS */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Calculadora de Captação de Chuva (7 cols) */}
-        <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-sky-700 flex items-center gap-1.5">
-                <CloudRain className="w-4 h-4" />
-                Dimensionamento de Captação Pluvial
-              </span>
-              <h3 className="text-lg font-bold text-slate-900 mt-1">
-                Aproveitamento de Telhados (Barcaças de Cacau / Estufas / Galpões)
-              </h3>
-            </div>
-            <Calculator className="w-6 h-6 text-sky-600" />
-          </div>
-
-          <div className="p-3.5 rounded-xl bg-sky-50 border border-sky-200 text-xs text-sky-900 font-mono">
-            Fórmula: Volume Potencial (L) = Área ({catchmentAreaM2} m²) × Precipitação ({rainEventMm} mm) × Coeficiente ({runoffCoeff}) = <strong>{potentialRainLiters.toLocaleString('pt-BR')} Litros ({potentialRainM3} m³)</strong>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Área de Captação (m²):
-              </label>
-              <input
-                type="number"
-                min={50}
-                max={5000}
-                value={catchmentAreaM2}
-                onChange={(e) => setCatchmentAreaM2(Math.max(0, Number(e.target.value)))}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-900"
-              />
-              <span className="text-xs text-slate-500">Barcaças + galpões + lonas</span>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Chuva do Evento / Mês (mm):
-              </label>
-              <input
-                type="number"
-                min={5}
-                max={400}
-                value={rainEventMm}
-                onChange={(e) => setRainEventMm(Math.max(0, Number(e.target.value)))}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-900"
-              />
-              <span className="text-xs text-slate-500">1 mm = 1 Litro por m²</span>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Eficiência / Coeficiente:
-              </label>
-              <select
-                value={runoffCoeff}
-                onChange={(e) => setRunoffCoeff(parseFloat(e.target.value))}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-bold text-slate-900 bg-white"
-              >
-                <option value={0.9}>0.90 — Telhado Metálico / Geomembrana</option>
-                <option value={0.85}>0.85 — Telha Cerâmica / Fibrocimento</option>
-                <option value={0.75}>0.75 — Calha Rústica c/ Descarte 1ª Água</option>
-              </select>
-              <span className="text-xs text-slate-500">Descontando descarte inicial</span>
-            </div>
-          </div>
-
-          {/* Resultado da Captação + Automação de Transbordo */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-            <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200">
-              <div className="text-xs font-semibold text-emerald-800">Volume Captado nesta Chuva</div>
-              <div className="text-2xl font-extrabold text-emerald-950 mt-0.5">
-                {potentialRainLiters.toLocaleString('pt-BR')} L <span className="text-sm font-normal">({potentialRainM3} m³)</span>
+      ) : (
+        /* TAB 2: RAIN CATCHMENT & TERRAIN RELIEF */
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          {/* Left: Rain Catchment (Clean — no ceramic tiles dropdown!) */}
+          <div className="lg:col-span-6 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm p-5 space-y-4">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300 flex items-center justify-center">
+                <CloudRain className="w-5 h-5" />
               </div>
-              <div className="text-xs text-emerald-700 mt-1">
-                Ganha <strong>+{extraDaysFromRain} dias extras</strong> de irrigação por gotejamento!
-              </div>
-            </div>
-
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-800 flex items-center gap-1">
-                  <ArrowRightLeft className="w-4 h-4 text-sky-600" />
-                  Válvula de Redistribuição
-                </span>
-                <input
-                  type="checkbox"
-                  checked={autoRedistributeRain}
-                  onChange={(e) => setAutoRedistributeRain(e.target.checked)}
-                  className="accent-sky-600"
-                />
-              </div>
-              <p className="text-xs text-slate-600 mt-1">
-                Espaço livre na {mainCistern.name}: <strong>{freeCisternSpaceM3} m³</strong>.
-                {overflowM3 > 0 ? (
-                  autoRedistributeRain ? (
-                    <span className="text-emerald-700 font-semibold block mt-0.5">
-                      ✓ Excedente de {overflowM3.toFixed(1)} m³ desviado automaticamente para o Açude/Barragem sem perder 1 gota!
-                    </span>
-                  ) : (
-                    <span className="text-rose-700 font-semibold block mt-0.5">
-                      ⚠ Risco de transbordamento! {overflowM3.toFixed(1)} m³ seriam perdidos sem redistribuição.
-                    </span>
-                  )
-                ) : (
-                  <span className="text-slate-600 block mt-0.5">
-                    ✓ A cisterna comporta 100% do volume deste evento.
-                  </span>
-                )}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Auditoria de Reservatórios: Assoreamento e Evaporação (5 cols) */}
-        <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
-          <div>
-            <span className="text-xs font-bold uppercase tracking-wider text-amber-700 flex items-center gap-1.5">
-              <Layers className="w-4 h-4" />
-              Monitoramento de Volume Útil e Assoreamento
-            </span>
-            <h3 className="text-lg font-bold text-slate-900 mt-1">
-              Estoque Aparente vs. Estoque Real (Assoreamento)
-            </h3>
-            <p className="text-xs text-slate-600">
-              Combate o colapso hídrico causado pelo acúmulo invisível de sedimentos no fundo de açudes e evaporação.
-            </p>
-          </div>
-
-          <div className="space-y-3">
-            {profile.reservoirs.map((res) => {
-              const siltationM3 = res.currentApparentVolumeM3 - res.currentRealVolumeM3;
-              const fillPct = Math.round((res.currentRealVolumeM3 / res.nominalCapacityM3) * 100);
-
-              return (
-                <div key={res.id} className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-900 text-xs">{res.name}</span>
-                    <span
-                      className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-                        res.hasCoverOrGeomembrane
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-amber-100 text-amber-800'
-                      }`}
-                    >
-                      {res.hasCoverOrGeomembrane ? 'Protegido' : `Assoreado (-${res.siltationLossPct}%)`}
-                    </span>
-                  </div>
-
-                  <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden flex">
-                    <div
-                      style={{ width: `${fillPct}%` }}
-                      className="bg-sky-600 h-full"
-                      title={`Volume Útil Real: ${res.currentRealVolumeM3} m³`}
-                    />
-                    <div
-                      style={{ width: `${res.siltationLossPct}%` }}
-                      className="bg-amber-600/80 h-full"
-                      title={`Volume Mascarado por Assoreamento: ${siltationM3} m³`}
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between text-xs text-slate-600">
-                    <span>
-                      Real: <strong className="text-slate-900">{res.currentRealVolumeM3} m³</strong> / {res.nominalCapacityM3} m³
-                    </span>
-                    <span className="text-amber-800 font-medium">
-                      Lodo/Fundo: -{siltationM3} m³ • Evap: {res.evaporationLossMmDay} mm/d
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* SECTION 3: INFLUÊNCIA DO RELEVO NA INFILTRAÇÃO E ENXURRADA DA CHUVA */}
-      {(() => {
-        const reliefImpact = calculateReliefRainImpact({
-          slopePct: activeSlopePct,
-          rainMm: rainEventMm,
-          cacaoAreaHa: profile.cacaoAreaHa,
-          hasMulchingOrCabruca: useMulching,
-          hasContourDitches,
-          dailyDemandM3: dailySmartAgroCicloM3
-        });
-
-        return (
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
               <div>
-                <span className="text-xs font-bold uppercase tracking-wider text-emerald-700 flex items-center gap-1.5">
-                  <Mountain className="w-4 h-4" />
-                  Hidrologia de Encosta &amp; Relevo da Propriedade
-                </span>
-                <h3 className="text-lg font-bold text-slate-900 mt-1">
-                  Como o Relevo ({activeSlopePct}% de Declividade) Influencia uma Chuva de {rainEventMm} mm
+                <h3 className="text-sm font-black text-slate-900 dark:text-white">
+                  Captação de Chuva nos Telhados e Barcaças
                 </h3>
-                <p className="text-xs text-slate-600">
-                  Terrenos mais inclinados perdem parte da chuva como enxurrada antes dela entrar na raiz do cacau. Ajuste o relevo abaixo (sincronizado com o Mapa 3D):
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Calcule quantos litros você guarda aproveitando os telhados da propriedade
                 </p>
               </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label className="space-y-1 text-xs">
+                <span className="font-bold text-slate-700 dark:text-slate-300">
+                  Área de Telhados e Barcaças (m²)
+                </span>
+                <input
+                  type="number"
+                  min={20}
+                  max={5000}
+                  value={catchmentAreaM2}
+                  onChange={(e) => setCatchmentAreaM2(Math.max(0, Number(e.target.value)))}
+                  className="w-full border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2.5 text-sm font-black bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                />
+              </label>
+
+              <label className="space-y-1 text-xs">
+                <span className="font-bold text-slate-700 dark:text-slate-300">
+                  Tamanho da Chuva (mm)
+                </span>
+                <input
+                  type="number"
+                  min={5}
+                  max={300}
+                  value={rainEventMm}
+                  onChange={(e) => setRainEventMm(Math.max(0, Number(e.target.value)))}
+                  className="w-full border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2.5 text-sm font-black bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                />
+              </label>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {[
+                { label: 'Chuva Leve (20 mm)', val: 20 },
+                { label: 'Chuva Média (45 mm)', val: 45 },
+                { label: 'Chuva Forte (80 mm)', val: 80 }
+              ].map((preset) => (
+                <button
+                  key={preset.val}
+                  type="button"
+                  onClick={() => setRainEventMm(preset.val)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border ${
+                    rainEventMm === preset.val
+                      ? 'bg-sky-600 text-white border-sky-600'
+                      : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 space-y-1">
+              <div className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                Água limpa captada nesta chuva:
+              </div>
+              <div className="text-3xl font-black text-emerald-900 dark:text-white">
+                +{potentialRainLiters.toLocaleString('pt-BR')} Litros{' '}
+                <span className="text-base font-bold text-emerald-700 dark:text-emerald-300">
+                  ({potentialRainM3} m³)
+                </span>
+              </div>
+              <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                Garante +{extraDaysFromRain} dias extras de irrigação!
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3 text-xs">
+              <div>
+                <div className="font-bold text-slate-900 dark:text-white">
+                  Desvio Automático de Sobra p/ Açude
+                </div>
+                <div className="text-slate-500 dark:text-slate-400">
+                  {overflowM3 > 0
+                    ? autoRedistributeRain
+                      ? `Cisterna enche e +${overflowM3.toFixed(1)} m³ vão para o açude`
+                      : `Sem desvio, ${overflowM3.toFixed(1)} m³ transbordam`
+                    : 'A cisterna comporta 100% dessa chuva'}
+                </div>
+              </div>
+              <ToggleSwitch
+                checked={autoRedistributeRain}
+                onChange={setAutoRedistributeRain}
+                size="sm"
+                activeColor="sky"
+              />
+            </div>
+          </div>
+
+          {/* Right: Relief & Slope Runoff Impact */}
+          <div className="lg:col-span-6 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 flex items-center justify-center">
+                  <Mountain className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 dark:text-white">
+                    Chuva no Relevo da Roça ({activeSlopePct}% declive)
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Quanto da chuva entra na raiz vs. escorre morro abaixo
+                  </p>
+                </div>
+              </div>
+
               <span
-                className={`self-start md:self-auto px-3 py-1.5 rounded-xl text-xs font-bold border ${
+                className={`px-2.5 py-1 rounded-full text-xs font-bold ${
                   reliefImpact.erosionRisk === 'Alto'
-                    ? 'bg-rose-50 text-rose-800 border-rose-200'
+                    ? 'bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-200'
                     : reliefImpact.erosionRisk === 'Moderado'
-                    ? 'bg-amber-50 text-amber-800 border-amber-200'
-                    : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                    ? 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-200'
+                    : 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200'
                 }`}
               >
-                Risco de Erosão / Assoreamento: {reliefImpact.erosionRisk}
+                Risco Erosão: {reliefImpact.erosionRisk}
               </span>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-              {/* Controles de Relevo e Manejo do Solo */}
-              <div className="lg:col-span-5 bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3 text-xs">
-                <div className="flex items-center justify-between font-bold text-slate-800">
-                  <span>Declividade Média do Terreno</span>
-                  <span className="text-emerald-700 font-mono">
-                    {activeSlopePct}% ({reliefImpact.slopeLabel})
-                  </span>
-                </div>
+            <div className="grid grid-cols-4 gap-2">
+              {[
+                { label: 'Plano (3%)', val: 3 },
+                { label: 'Leve (10%)', val: 10 },
+                { label: 'Morro (18%)', val: 18 },
+                { label: 'Forte (28%)', val: 28 }
+              ].map((p) => (
+                <button
+                  key={p.val}
+                  type="button"
+                  onClick={() => handleSlopeChange(p.val)}
+                  className={`py-2 rounded-xl text-xs font-bold border ${
+                    Math.abs(activeSlopePct - p.val) <= 3
+                      ? 'bg-emerald-600 text-white border-emerald-600'
+                      : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
 
-                <div className="grid grid-cols-4 gap-1.5">
-                  {[
-                    { label: 'Plano (3%)', val: 3 },
-                    { label: 'Ondulado (10%)', val: 10 },
-                    { label: 'Morro (18%)', val: 18 },
-                    { label: 'Íngreme (28%)', val: 28 }
-                  ].map((p) => (
-                    <button
-                      key={p.label}
-                      type="button"
-                      onClick={() => handleSlopeChange(p.val)}
-                      className={`py-1.5 px-1 rounded-lg font-bold border text-[11px] transition-all ${
-                        Math.abs(activeSlopePct - p.val) <= 3
-                          ? 'bg-emerald-600 text-white border-emerald-600'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                      }`}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-
-                <input
-                  type="range"
-                  min={1}
-                  max={35}
-                  step={1}
-                  value={activeSlopePct}
-                  onChange={(e) => handleSlopeChange(Number(e.target.value))}
-                  className="w-full accent-emerald-600"
-                />
-
-                <div className="space-y-2 pt-1">
-                  <label className="flex items-center justify-between p-2.5 rounded-lg bg-white border border-slate-200 cursor-pointer">
-                    <span className="font-semibold text-slate-800">Cobertura Morta / Cabruca no Solo</span>
-                    <input
-                      type="checkbox"
-                      checked={useMulching}
-                      onChange={(e) => setUseMulching(e.target.checked)}
-                      className="accent-emerald-600 w-4 h-4"
-                    />
-                  </label>
-
-                  <label className="flex items-center justify-between p-2.5 rounded-lg bg-white border border-slate-200 cursor-pointer">
-                    <span className="font-semibold text-slate-800">Caixas Secas / Valas em Curva de Nível</span>
-                    <input
-                      type="checkbox"
-                      checked={hasContourDitches}
-                      onChange={(e) => setHasContourDitches(e.target.checked)}
-                      className="accent-sky-600 w-4 h-4"
-                    />
-                  </label>
-                </div>
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-xs font-bold">
+                <span className="text-emerald-700 dark:text-emerald-400">
+                  Entra na Raiz: {reliefImpact.infiltrationPct}% ({reliefImpact.totalFarmInfiltratedM3.toLocaleString('pt-BR')} m³)
+                </span>
+                <span className="text-amber-700 dark:text-amber-400">
+                  Escorre: {reliefImpact.runoffPct}% ({reliefImpact.totalFarmRunoffM3.toLocaleString('pt-BR')} m³)
+                </span>
               </div>
-
-              {/* Resultados do Relevo x Chuva */}
-              <div className="lg:col-span-7 space-y-4">
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs font-bold">
-                    <span className="text-emerald-800">
-                      Infiltra na Raiz: {reliefImpact.infiltrationPct}% ({reliefImpact.infiltratedMm} mm)
-                    </span>
-                    <span className="text-amber-800">
-                      Escorre Morro Abaixo: {reliefImpact.runoffPct}% ({reliefImpact.runoffMm} mm)
-                    </span>
-                  </div>
-                  <div className="w-full h-4 rounded-full overflow-hidden flex bg-slate-200 border border-slate-300">
-                    <div
-                      style={{ width: `${reliefImpact.infiltrationPct}%` }}
-                      className="bg-emerald-600 h-full transition-all"
-                    />
-                    <div
-                      style={{ width: `${reliefImpact.runoffPct}%` }}
-                      className="bg-amber-500 h-full transition-all"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                  <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200">
-                    <div className="text-emerald-800 font-semibold">Água Retida no Solo</div>
-                    <div className="text-lg font-black text-emerald-950 mt-0.5">
-                      {reliefImpact.infiltratedM3PerHa} m³/ha
-                    </div>
-                    <div className="text-emerald-700 mt-0.5">
-                      Total na roça: {reliefImpact.totalFarmInfiltratedM3.toLocaleString('pt-BR')} m³
-                    </div>
-                  </div>
-
-                  <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200">
-                    <div className="text-amber-900 font-semibold">Enxurrada na Encosta</div>
-                    <div className="text-lg font-black text-amber-950 mt-0.5">
-                      {reliefImpact.runoffM3PerHa} m³/ha
-                    </div>
-                    <div className="text-amber-800 mt-0.5">
-                      Escoando: {reliefImpact.totalFarmRunoffM3.toLocaleString('pt-BR')} m³
-                    </div>
-                  </div>
-
-                  <div className="p-3.5 rounded-xl bg-sky-50 border border-sky-200">
-                    <div className="text-sky-900 font-semibold">Aproveitável por Gravidade</div>
-                    <div className="text-lg font-black text-sky-950 mt-0.5">
-                      +{reliefImpact.collectibleRunoffM3.toLocaleString('pt-BR')} m³
-                    </div>
-                    <div className="text-sky-700 mt-0.5">
-                      +{reliefImpact.extraIrrigationDaysPossible} dias em caixas/açude
-                    </div>
-                  </div>
-                </div>
-
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1">
-                  <div>
-                    <strong>Diagnóstico do Relevo:</strong> {reliefImpact.siltationWarning}
-                  </div>
-                  <div>
-                    <strong>Recomendação Prática:</strong> {reliefImpact.practicalRecommendation}
-                  </div>
-                  <div className="text-[11px] text-slate-500 pt-1 inline-flex items-center gap-1">
-                    <Info className="w-3.5 h-3.5 shrink-0" />
-                    <span>
-                      Simulação ilustrativa baseada em declividade e cobertura superficial; obras de terraceamento/curvas de nível exigem avaliação de agrônomo.
-                    </span>
-                  </div>
-                </div>
+              <div className="w-full h-4 rounded-full overflow-hidden flex bg-slate-200 dark:bg-slate-700">
+                <div style={{ width: `${reliefImpact.infiltrationPct}%` }} className="bg-emerald-500 h-full" />
+                <div style={{ width: `${reliefImpact.runoffPct}%` }} className="bg-amber-500 h-full" />
               </div>
             </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+              <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <span className="font-bold text-slate-800 dark:text-slate-200">Cobertura Morta / Sombra</span>
+                <ToggleSwitch checked={useMulching} onChange={setUseMulching} size="sm" />
+              </div>
+              <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
+                <span className="font-bold text-slate-800 dark:text-slate-200">Caixas Secas na Encosta</span>
+                <ToggleSwitch checked={hasContourDitches} onChange={setHasContourDitches} size="sm" activeColor="sky" />
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 text-xs text-sky-900 dark:text-sky-200">
+              Com caixas secas na baixada, você recupera até{' '}
+              <strong>+{reliefImpact.collectibleRunoffM3.toLocaleString('pt-BR')} m³</strong> (+{reliefImpact.extraIrrigationDaysPossible} dias extras sem gastar energia bombeando!).
+            </div>
           </div>
-        );
-      })()}
+        </div>
+      )}
     </div>
   );
 };

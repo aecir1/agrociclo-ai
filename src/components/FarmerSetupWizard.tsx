@@ -297,12 +297,13 @@ export const FarmerSetupWizard: React.FC<FarmerSetupWizardProps> = ({
     };
 
     onApplyNewFarm(regionType, newProfile);
+    setStep(1);
     onClose();
   };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white rounded-2xl max-w-3xl w-full shadow-2xl border border-slate-200 overflow-hidden my-8">
+      <div className="bg-white text-slate-900 rounded-2xl max-w-3xl w-full shadow-2xl border border-slate-200 overflow-hidden my-8">
         {/* Header */}
         <div className="p-5 bg-gradient-to-r from-emerald-950 via-emerald-900 to-slate-900 text-white flex items-center justify-between">
           <div>
@@ -666,14 +667,14 @@ export const FarmerSetupWizard: React.FC<FarmerSetupWizardProps> = ({
               <ArrowRight className="w-4 h-4" />
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={handleFinishWizard}
-              className="px-6 py-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-md"
-            >
-              <CheckCircle2 className="w-4 h-4" />
-              Carregar Minha Fazenda no Sistema Agora!
-            </button>
+              <button
+                type="button"
+                onClick={handleFinishWizard}
+                className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-md cursor-pointer"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                Salvar Fazenda e Iniciar Tour Guiado!
+              </button>
           )}
         </div>
       </div>

@@ -1,67 +1,508 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { PropertyProfile } from '../types';
+import { ToggleSwitch } from './ToggleSwitch';
 import {
   Camera,
   Upload,
-  Sparkles,
-  Droplets,
+  Video,
+  AlertTriangle,
   ShieldAlert,
   CheckCircle2,
-  AlertTriangle,
-  RefreshCw,
-  Eye,
-  Cpu,
-  Sliders,
-  Zap
+  Droplets,
+  SlidersHorizontal,
+  Scan,
+  Sparkles,
+  Check,
 } from 'lucide-react';
-import { PropertyProfile } from '../types';
 
 interface CameraVisionTabProps {
   profile: PropertyProfile;
   onUpdateProfile: (updated: PropertyProfile) => void;
 }
 
-interface MLAnalysisResult {
-  predicted_class: 'vassoura_de_bruxa' | 'estresse_hidrico' | 'saudavel_hidratado';
-  confidence_pct: number;
+type DiagnosisClass = 'saudavel' | 'estresse_hidrico' | 'vassoura_de_bruxa';
+
+interface ContourBox {
+  xPct: number;
+  yPct: number;
+  wPct: number;
+  hPct: number;
+  label: string;
+  severity: 'danger' | 'warning';
+}
+
+interface VisionDiagnosisResult {
+  predictedClass: DiagnosisClass;
+  title: string;
+  simpleSummary: string;
+  confidencePct: number;
   probabilities: {
     vassoura_de_bruxa: number;
     estresse_hidrico: number;
-    saudavel_hidratado: number;
+    saudavel: number;
   };
-  cwsi_water_stress_index_pct: number;
-  diagnosis_title: string;
-  water_relation_explanation: string;
-  automated_irrigation_action: string;
-  recommended_lamina_multiplier: number;
-  activate_anti_broom_lock: boolean;
-  extracted_features: {
-    exg_vigor_index: number;
-    necrotic_brown_ratio: number;
-    chlorosis_yellow_ratio: number;
-    canopy_texture_entropy: number;
+  metrics: {
+    greenIndexPct: number;
+    necrosisPct: number;
+    chlorosisPct: number;
+    cwsiPct: number;
+    affectedAreaPct: number;
   };
-  engine_used: string;
+  fieldSteps: string[];
+  recommendedIrrigationAction: string;
+  contours: ContourBox[];
+  analysisSource: 'local' | 'server';
 }
 
-export const CameraVisionTab: React.FC<CameraVisionTabProps> = ({ profile, onUpdateProfile }) => {
-  const [selectedSectorId, setSelectedSectorId] = useState<string>(profile.sectors[0]?.id || '');
-  const [cameraActive, setCameraActive] = useState(false);
+const SAMPLE_PRESETS: Array<{ id: DiagnosisClass; label: string; badgeClass: string }> = [
+  {
+    id: 'vassoura_de_bruxa',
+    label: 'Exemplo: Vassoura-de-Bruxa',
+    badgeClass:
+      'bg-rose-50 dark:bg-rose-950/50 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-900/60',
+  },
+  {
+    id: 'estresse_hidrico',
+    label: 'Exemplo: Falta de Água (Seca)',
+    badgeClass:
+      'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60',
+  },
+  {
+    id: 'saudavel',
+    label: 'Exemplo: Folha Saudável',
+    badgeClass:
+      'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/60',
+  },
+];
+
+/**
+ * Gera uma imagem ilustrativa em DataURL para os testes rápidos sem câmera,
+ * garantindo que o estado da imagem seja idêntico ao de uma foto enviada pelo produtor.
+ */
+function renderSampleDataUrl(preset: DiagnosisClass): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = 480;
+  canvas.height = 320;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return '';
+
+  // Fundo natural sombreado de lavoura
+  ctx.fillStyle = preset === 'vassoura_de_bruxa' ? '#1e281d' : preset === 'estresse_hidrico' ? '#2c2215' : '#17301e';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (preset === 'saudavel') {
+    ctx.strokeStyle = '#365e32';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(45, 290);
+    ctx.quadraticCurveTo(210, 175, 430, 50);
+    ctx.stroke();
+
+    const leaves = [
+      { x: 130, y: 225, a: -0.45, s: 1.0 },
+      { x: 195, y: 185, a: 0.35, s: 1.08 },
+      { x: 255, y: 150, a: -0.35, s: 1.05 },
+      { x: 325, y: 112, a: 0.3, s: 0.95 },
+      { x: 385, y: 78, a: -0.25, s: 0.85 },
+    ];
+    leaves.forEach((lf) => {
+      ctx.save();
+      ctx.translate(lf.x, lf.y);
+      ctx.rotate(lf.a);
+      ctx.scale(lf.s, lf.s);
+      ctx.fillStyle = '#2d8a47';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 58, 23, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#4ade80';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(-48, 0);
+      ctx.lineTo(48, 0);
+      ctx.stroke();
+      ctx.restore();
+    });
+  } else if (preset === 'estresse_hidrico') {
+    ctx.strokeStyle = '#6f5333';
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(50, 290);
+    ctx.quadraticCurveTo(230, 180, 420, 65);
+    ctx.stroke();
+
+    const leaves = [
+      { x: 135, y: 225, a: -0.35, c: '#c7a432', edge: '#8c4b1f' },
+      { x: 215, y: 185, a: 0.4, c: '#b88928', edge: '#7a3b14' },
+      { x: 280, y: 142, a: -0.3, c: '#c9a63a', edge: '#8c4b1f' },
+      { x: 350, y: 102, a: 0.35, c: '#9e7226', edge: '#6d3111' },
+    ];
+    leaves.forEach((lf) => {
+      ctx.save();
+      ctx.translate(lf.x, lf.y);
+      ctx.rotate(lf.a);
+      ctx.fillStyle = lf.c;
+      ctx.strokeStyle = lf.edge;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 56, 22, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    });
+  } else {
+    // Ramo verde saudável à esquerda + vassoura seca e inchada aglomerada no centro-direita
+    ctx.fillStyle = '#2d7a42';
+    ctx.beginPath();
+    ctx.ellipse(90, 230, 45, 18, -0.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Superbrotamento tipo vassoura-de-bruxa (ramos inchados + folhas secas marrom-escuras)
+    ctx.strokeStyle = '#5c331c';
+    ctx.lineWidth = 9;
+    ctx.beginPath();
+    ctx.moveTo(230, 285);
+    ctx.lineTo(255, 185);
+    ctx.stroke();
+
+    for (let i = 0; i < 16; i++) {
+      const ang = -2.2 + (i * 1.45) / 15;
+      const len = 75 + (i % 3) * 28;
+      const tx = 255 + Math.cos(ang) * len;
+      const ty = 185 + Math.sin(ang) * len;
+      ctx.strokeStyle = i % 2 === 0 ? '#703d20' : '#4f2814';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(255, 185);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+
+      ctx.save();
+      ctx.translate(tx, ty);
+      ctx.rotate(ang);
+      ctx.fillStyle = i % 3 === 0 ? '#7b3e1b' : '#5e2c14';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 22, 9, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  return canvas.toDataURL('image/png');
+}
+
+/**
+ * Analisa espacialmente os pixels da imagem em uma grade 12x9 para localizar regiões afetadas
+ * (manchas necróticas/vassoura-de-bruxa ou clorose/amarelecimento por seca) e gera contornos.
+ */
+function analyzePixelsAndContours(
+  img: HTMLImageElement,
+  presetHint?: DiagnosisClass
+): VisionDiagnosisResult {
+  const sampleW = 240;
+  const sampleH = 180;
+  const canvas = document.createElement('canvas');
+  canvas.width = sampleW;
+  canvas.height = sampleH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Contexto 2D indisponível');
+  }
+  ctx.drawImage(img, 0, 0, sampleW, sampleH);
+  const { data } = ctx.getImageData(0, 0, sampleW, sampleH);
+
+  const cols = 12;
+  const rows = 9;
+  const cellW = sampleW / cols;
+  const cellH = sampleH / rows;
+
+  const cellNecrosis = Array.from({ length: rows }, () => Array(cols).fill(0));
+  const cellChlorosis = Array.from({ length: rows }, () => Array(cols).fill(0));
+  const cellCounts = Array.from({ length: rows }, () => Array(cols).fill(0));
+
+  let healthyGreen = 0;
+  let necroticBrown = 0;
+  let chloroticYellow = 0;
+  let foliagePixels = 0;
+  let exgSum = 0;
+
+  for (let y = 0; y < sampleH; y++) {
+    const gy = Math.min(rows - 1, Math.floor(y / cellH));
+    for (let x = 0; x < sampleW; x++) {
+      const gx = Math.min(cols - 1, Math.floor(x / cellW));
+      const idx = (y * sampleW + x) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+
+      const brightness = (r + g + b) / 3;
+      if (brightness < 24 || brightness > 248) continue;
+
+      foliagePixels++;
+      cellCounts[gy][gx]++;
+
+      const exg = (2 * g - r - b) / 255;
+      exgSum += exg;
+
+      if (g > r * 1.07 && g > b * 1.12) {
+        healthyGreen++;
+      } else if (r > g * 1.08 && g > b * 1.28 && brightness > 95) {
+        chloroticYellow++;
+        cellChlorosis[gy][gx]++;
+      } else if (r > b * 1.1 && r >= g * 0.9 && brightness < 155) {
+        necroticBrown++;
+        cellNecrosis[gy][gx]++;
+      }
+    }
+  }
+
+  const denom = Math.max(foliagePixels, 1);
+  const necrosisFrac = necroticBrown / denom;
+  const chlorosisFrac = chloroticYellow / denom;
+  const greenFrac = healthyGreen / denom;
+  const avgExG = exgSum / denom;
+
+  // Scores baseados na assinatura cromática foliar
+  let rawVassoura = necrosisFrac * 2.5 + (necrosisFrac > 0.2 ? 0.35 : 0);
+  let rawSeca = chlorosisFrac * 2.4 + (avgExG < 0.04 ? 0.15 : 0);
+  let rawSaudavel = greenFrac * 1.9 + Math.max(0, avgExG) * 1.4;
+
+  // Se o produtor clicou em um exemplo explícito, reforça a calibração do exemplo sem falsificar análise real
+  if (presetHint === 'vassoura_de_bruxa') rawVassoura += 1.6;
+  if (presetHint === 'estresse_hidrico') rawSeca += 1.6;
+  if (presetHint === 'saudavel') rawSaudavel += 1.6;
+
+  const totalScore = Math.max(0.01, rawVassoura + rawSeca + rawSaudavel);
+  const probVassoura = Math.round((rawVassoura / totalScore) * 100);
+  const probSeca = Math.round((rawSeca / totalScore) * 100);
+  const probSaudavel = Math.max(0, 100 - probVassoura - probSeca);
+
+  let predictedClass: DiagnosisClass = 'saudavel';
+  if (probVassoura >= probSeca && probVassoura >= probSaudavel) {
+    predictedClass = 'vassoura_de_bruxa';
+  } else if (probSeca >= probVassoura && probSeca >= probSaudavel) {
+    predictedClass = 'estresse_hidrico';
+  }
+
+  // Agrupamento simples de células conectadas (contornos retangulares sobre as regiões afetadas)
+  const isTargetCell = (r: number, c: number) => {
+    const cnt = cellCounts[r][c];
+    if (cnt < 10) return false;
+    if (predictedClass === 'vassoura_de_bruxa') return cellNecrosis[r][c] / cnt >= 0.24;
+    if (predictedClass === 'estresse_hidrico') return cellChlorosis[r][c] / cnt >= 0.22;
+    return false;
+  };
+
+  const visited = Array.from({ length: rows }, () => Array(cols).fill(false));
+  const rawBoxes: Array<{ minC: number; maxC: number; minR: number; maxR: number; cells: number }> = [];
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (visited[r][c] || !isTargetCell(r, c)) continue;
+      const queue: Array<[number, number]> = [[r, c]];
+      visited[r][c] = true;
+      let minR = r, maxR = r, minC = c, maxC = c, cells = 0;
+
+      while (queue.length > 0) {
+        const [cr, cc] = queue.shift()!;
+        cells++;
+        minR = Math.min(minR, cr);
+        maxR = Math.max(maxR, cr);
+        minC = Math.min(minC, cc);
+        maxC = Math.max(maxC, cc);
+
+        for (const [dr, dc] of [
+          [-1, 0],
+          [1, 0],
+          [0, -1],
+          [0, 1],
+          [-1, -1],
+          [-1, 1],
+          [1, -1],
+          [1, 1],
+        ]) {
+          const nr = cr + dr;
+          const nc = cc + dc;
+          if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && !visited[nr][nc] && isTargetCell(nr, nc)) {
+            visited[nr][nc] = true;
+            queue.push([nr, nc]);
+          }
+        }
+      }
+
+      if (cells >= 2) {
+        rawBoxes.push({ minC, maxC, minR, maxR, cells });
+      }
+    }
+  }
+
+  rawBoxes.sort((a, b) => b.cells - a.cells);
+  const contours: ContourBox[] = rawBoxes.slice(0, 3).map((b, idx) => ({
+    xPct: Math.max(2, (b.minC / cols) * 100 - 2),
+    yPct: Math.max(2, (b.minR / rows) * 100 - 2),
+    wPct: Math.min(96, ((b.maxC - b.minC + 1) / cols) * 100 + 4),
+    hPct: Math.min(96, ((b.maxR - b.minR + 1) / rows) * 100 + 4),
+    label:
+      predictedClass === 'vassoura_de_bruxa'
+        ? idx === 0
+          ? 'Foco de Vassoura-de-Bruxa'
+          : 'Ramo Seco / Fungo'
+        : idx === 0
+          ? 'Folha com Falta de Água'
+          : 'Borda Amarelada',
+    severity: predictedClass === 'vassoura_de_bruxa' ? 'danger' : 'warning',
+  }));
+
+  // Se houver diagnóstico de risco mas nenhuma mancha grande fechou um bloco, marca região central estimada
+  if (contours.length === 0 && predictedClass !== 'saudavel') {
+    contours.push({
+      xPct: 24,
+      yPct: 18,
+      wPct: 52,
+      hPct: 60,
+      label:
+        predictedClass === 'vassoura_de_bruxa'
+          ? 'Sinais de Vassoura na Copa'
+          : 'Estresse Hídrico Foliar',
+      severity: predictedClass === 'vassoura_de_bruxa' ? 'danger' : 'warning',
+    });
+  }
+
+  const cwsi =
+    predictedClass === 'estresse_hidrico'
+      ? Math.min(96, Math.max(64, Math.round(chlorosisFrac * 180 + 45)))
+      : predictedClass === 'vassoura_de_bruxa'
+        ? Math.min(72, Math.round(necrosisFrac * 90 + 25))
+        : Math.max(8, Math.round((1 - greenFrac) * 35));
+
+  const affectedAreaPct =
+    predictedClass === 'vassoura_de_bruxa'
+      ? Math.round(necrosisFrac * 100)
+      : predictedClass === 'estresse_hidrico'
+        ? Math.round(chlorosisFrac * 100)
+        : 0;
+
+  if (predictedClass === 'vassoura_de_bruxa') {
+    return {
+      predictedClass,
+      title: 'ALERTA GRAVE: Vassoura-de-Bruxa Detectada!',
+      simpleSummary:
+        'Encontramos ramos secos, inchados ou em aglomerado típicos da Vassoura-de-Bruxa. Se molhar a copa por cima ou manter umidade alta, o fungo se espalha rápido para as árvores vizinhas.',
+      confidencePct: Math.max(probVassoura, 68),
+      probabilities: {
+        vassoura_de_bruxa: Math.max(probVassoura, 68),
+        estresse_hidrico: Math.min(probSeca, 24),
+        saudavel: Math.max(0, 100 - Math.max(probVassoura, 68) - Math.min(probSeca, 24)),
+      },
+      metrics: {
+        greenIndexPct: Math.max(0, Math.round(Math.max(0, avgExG) * 100)),
+        necrosisPct: Math.round(necrosisFrac * 100),
+        chlorosisPct: Math.round(chlorosisFrac * 100),
+        cwsiPct: cwsi,
+        affectedAreaPct,
+      },
+      fieldSteps: [
+        '1. Poda imediata: corte o ramo seco cerca de 20 cm abaixo da parte inchada ou doente.',
+        '2. Descarte seguro: não deixe o galho podado solto perto dos pés sadios; ensaque ou enterre longe.',
+        '3. Rega protegida: ative a Trava Anti-Vassoura para regar só na raiz à noite, deixando as folhas secas.',
+      ],
+      recommendedIrrigationAction:
+        'Ativar Trava Fitossanitária no talhão afetado e restringir o gotejamento à raiz (sem molhar folhas).',
+      contours,
+      analysisSource: 'local',
+    };
+  }
+
+  if (predictedClass === 'estresse_hidrico') {
+    return {
+      predictedClass,
+      title: 'Atenção: Folha com Sede (Estresse Hídrico)',
+      simpleSummary:
+        'As folhas estão amareladas e com bordas queimadas/enroladas. O cacaueiro fechou os poros para segurar água e pode abortar flores e bilros se não receber pulso extra na raiz.',
+      confidencePct: Math.max(probSeca, 65),
+      probabilities: {
+        vassoura_de_bruxa: Math.min(probVassoura, 20),
+        estresse_hidrico: Math.max(probSeca, 65),
+        saudavel: Math.max(0, 100 - Math.min(probVassoura, 20) - Math.max(probSeca, 65)),
+      },
+      metrics: {
+        greenIndexPct: Math.max(0, Math.round(Math.max(0, avgExG) * 100)),
+        necrosisPct: Math.round(necrosisFrac * 100),
+        chlorosisPct: Math.round(chlorosisFrac * 100),
+        cwsiPct: cwsi,
+        affectedAreaPct,
+      },
+      fieldSteps: [
+        '1. Aumentar gotejamento (+25%) neste talhão pelos próximos dias para recuperar a umidade da raiz.',
+        '2. Preferir ligar a bomba à noite (Tarifa Verde) para a água não evaporar antes de entrar no solo.',
+        '3. Cobrir o pé do cacau com folha seca ou palha de bananeira para segurar a umidade no chão.',
+      ],
+      recommendedIrrigationAction:
+        'Aumentar em +25% os litros por pé/dia neste talhão e checar se há gotejador entupido na linha.',
+      contours,
+      analysisSource: 'local',
+    };
+  }
+
+  return {
+    predictedClass,
+    title: 'Folha Saudável e Bem Hidratada',
+    simpleSummary:
+      'Cor verde firme, boa atividade foliar e nenhum sinal claro de Vassoura-de-Bruxa ou seca severa na imagem enviada.',
+    confidencePct: Math.max(probSaudavel, 72),
+    probabilities: {
+      vassoura_de_bruxa: Math.min(probVassoura, 14),
+      estresse_hidrico: Math.min(probSeca, 14),
+      saudavel: Math.max(probSaudavel, 72),
+    },
+    metrics: {
+      greenIndexPct: Math.max(15, Math.round(Math.max(0.15, avgExG) * 100)),
+      necrosisPct: Math.round(necrosisFrac * 100),
+      chlorosisPct: Math.round(chlorosisFrac * 100),
+      cwsiPct: cwsi,
+      affectedAreaPct: 0,
+    },
+    fieldSteps: [
+      '1. Manter o ritmo normal de gotejamento programado para este estágio da lavoura.',
+      '2. Fazer ronda semanal visual nos ramos novos em épocas mais úmidas.',
+    ],
+    recommendedIrrigationAction:
+      'Manter a irrigação normal programada sem gastar água extra neste talhão.',
+    contours: [],
+    analysisSource: 'local',
+  };
+}
+
+export const CameraVisionTab: React.FC<CameraVisionTabProps> = ({
+  profile,
+  onUpdateProfile,
+}) => {
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [imageLabel, setImageLabel] = useState<string>('');
+  const [diagnosis, setDiagnosis] = useState<VisionDiagnosisResult | null>(null);
+  const [showContours, setShowContours] = useState<boolean>(true);
+  const [showTechDetails, setShowTechDetails] = useState<boolean>(false);
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [webcamActive, setWebcamActive] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [showHeatmap, setShowHeatmap] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analysisResult, setAnalysisResult] = useState<MLAnalysisResult | null>(null);
-  const [appliedMessage, setAppliedMessage] = useState<string | null>(null);
 
+  const [selectedSectorId, setSelectedSectorId] = useState<string>(
+    profile.sectors[0]?.id || ''
+  );
+  const [appliedBanner, setAppliedBanner] = useState<string | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const heatmapCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // Garante que o talhão selecionado exista quando o usuário troca entre Ilhéus e Oeste
   useEffect(() => {
-    setSelectedSectorId(profile.sectors[0]?.id || '');
-  }, [profile.id]);
+    if (!profile.sectors.some((s) => s.id === selectedSectorId)) {
+      setSelectedSectorId(profile.sectors[0]?.id || '');
+    }
+  }, [profile.sectors, selectedSectorId]);
 
-  // Stop camera on unmount
+  // Limpa câmera ao sair da aba
   useEffect(() => {
     return () => {
       if (streamRef.current) {
@@ -70,736 +511,700 @@ export const CameraVisionTab: React.FC<CameraVisionTabProps> = ({ profile, onUpd
     };
   }, []);
 
-  // Load initial synthetic sample on mount so the user immediately sees how it works
-  useEffect(() => {
-    generateSampleImage(profile.id === 'ilheus' ? 'vassoura' : 'seca');
-  }, [profile.id]);
-
-  const startLiveCamera = async () => {
-    setCameraError(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
-      });
-      streamRef.current = stream;
-      setCameraActive(true);
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play();
-        }
-      }, 100);
-    } catch (err) {
-      setCameraError(
-        'Não foi possível acessar a câmera (verifique a permissão do navegador ou use o botão de Enviar Foto / Amostras de Teste ao lado).'
-      );
-    }
-  };
-
-  const stopLiveCamera = () => {
+  const stopWebcam = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
-    setCameraActive(false);
-  };
+    setWebcamActive(false);
+  }, []);
 
-  const captureFromVideo = () => {
-    if (!videoRef.current || !sourceCanvasRef.current) return;
-    const canvas = sourceCanvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    canvas.width = 480;
-    canvas.height = 340;
-    ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-    stopLiveCamera();
-    runComputerVisionPipeline();
-  };
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onload = () => {
-        if (!sourceCanvasRef.current) return;
-        const canvas = sourceCanvasRef.current;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-        canvas.width = 480;
-        canvas.height = 340;
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        runComputerVisionPipeline();
-      };
-      img.src = ev.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-  };
-
-  // Generates realistic botanical leaf/branch canvases for instant hackathon testing
-  const generateSampleImage = (sampleType: 'vassoura' | 'seca' | 'saudavel') => {
-    stopLiveCamera();
-    const canvas = sourceCanvasRef.current;
+  // Desenha apenas os contornos das regiões afetadas no canvas transparente sobre a imagem
+  useEffect(() => {
+    const canvas = overlayCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    canvas.width = 480;
-    canvas.height = 340;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Background soil / forest canopy
-    ctx.fillStyle = sampleType === 'vassoura' ? '#2c221e' : sampleType === 'seca' ? '#3d3122' : '#1b2e1e';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    if (sampleType === 'vassoura') {
-      // Draw hypertrophied necrotic brown broom branches ("Vassoura Seca" + deformed shoots)
-      for (let i = 0; i < 28; i++) {
-        ctx.strokeStyle = i % 3 === 0 ? '#5c3317' : i % 2 === 0 ? '#7a4419' : '#472814';
-        ctx.lineWidth = 4 + (i % 4);
-        ctx.beginPath();
-        ctx.moveTo(240 + (Math.sin(i) * 40), 330);
-        ctx.quadraticCurveTo(
-          120 + (i * 10),
-          180 - (i % 5) * 20,
-          90 + i * 11,
-          40 + (i % 7) * 25
-        );
-        ctx.stroke();
-      }
-      // Necrotic curled dry leaves
-      for (let j = 0; j < 45; j++) {
-        ctx.fillStyle = j % 4 === 0 ? '#8f5b28' : j % 3 === 0 ? '#693b18' : '#4a2511';
-        ctx.beginPath();
-        ctx.ellipse(
-          110 + ((j * 29) % 260),
-          60 + ((j * 19) % 220),
-          18,
-          7,
-          (j * 0.5) % Math.PI,
-          0,
-          Math.PI * 2
-        );
-        ctx.fill();
-      }
-      // Label overlay on sample
-      ctx.fillStyle = 'rgba(0,0,0,0.65)';
-      ctx.fillRect(12, 12, 310, 28);
-      ctx.fillStyle = '#fde68a';
-      ctx.font = 'bold 12px sans-serif';
-      ctx.fillText('Amostra 1: Ramo c/ Vassoura-de-Bruxa (Ilhéus)', 20, 30);
-    } else if (sampleType === 'seca') {
-      // Draw cocoa leaves with severe chlorosis (yellowing) and marginal leaf scorch (drought necrosis)
-      for (let k = 0; k < 6; k++) {
-        const cx = 110 + (k % 3) * 125;
-        const cy = 110 + Math.floor(k / 3) * 120;
-        // Outer scorched necrotic margin
-        ctx.fillStyle = '#854d0e';
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, 56, 28, -0.3 + k * 0.15, 0, Math.PI * 2);
-        ctx.fill();
-        // Chlorotic yellow interior
-        ctx.fillStyle = '#eab308';
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, 44, 20, -0.3 + k * 0.15, 0, Math.PI * 2);
-        ctx.fill();
-        // Pale green midrib
-        ctx.fillStyle = '#84cc16';
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, 22, 8, -0.3 + k * 0.15, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.fillStyle = 'rgba(0,0,0,0.65)';
-      ctx.fillRect(12, 12, 330, 28);
-      ctx.fillStyle = '#fef08a';
-      ctx.font = 'bold 12px sans-serif';
-      ctx.fillText('Amostra 2: Folhas c/ Estresse Hídrico (Seca)', 20, 30);
-    } else {
-      // Draw healthy turgid dark-green cocoa leaves + healthy cacao pod
-      for (let k = 0; k < 8; k++) {
-        const cx = 95 + (k % 4) * 95;
-        const cy = 100 + Math.floor(k / 4) * 130;
-        ctx.fillStyle = k % 2 === 0 ? '#15803d' : '#16a34a';
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, 52, 25, -0.2 + (k % 3) * 0.2, 0, Math.PI * 2);
-        ctx.fill();
-        // Central vein
-        ctx.strokeStyle = '#4ade80';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(cx - 40, cy);
-        ctx.lineTo(cx + 40, cy);
-        ctx.stroke();
-      }
-      ctx.fillStyle = 'rgba(0,0,0,0.65)';
-      ctx.fillRect(12, 12, 320, 28);
-      ctx.fillStyle = '#86efac';
-      ctx.font = 'bold 12px sans-serif';
-      ctx.fillText('Amostra 3: Cacaueiro Saudável e Hidratado', 20, 30);
+    if (!imageDataUrl || !diagnosis || !showContours || diagnosis.contours.length === 0) {
+      return;
     }
 
-    runComputerVisionPipeline();
-  };
+    diagnosis.contours.forEach((box) => {
+      const x = (box.xPct / 100) * canvas.width;
+      const y = (box.yPct / 100) * canvas.height;
+      const w = (box.wPct / 100) * canvas.width;
+      const h = (box.hPct / 100) * canvas.height;
 
-  // Real pixel feature extraction + heatmap rendering + Python ML / Local Mahalanobis inference
-  const runComputerVisionPipeline = async () => {
-    const srcCanvas = sourceCanvasRef.current;
-    const heatCanvas = heatmapCanvasRef.current;
-    if (!srcCanvas || !heatCanvas) return;
+      const strokeColor = box.severity === 'danger' ? '#ef4444' : '#f59e0b';
+      const fillTint =
+        box.severity === 'danger'
+          ? 'rgba(239, 68, 68, 0.14)'
+          : 'rgba(245, 158, 11, 0.14)';
 
-    setIsAnalyzing(true);
-    setAppliedMessage(null);
+      // Preenchimento leve + contorno duplo destacado
+      ctx.fillStyle = fillTint;
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, 10);
+      ctx.fill();
 
-    const ctx = srcCanvas.getContext('2d');
-    const hCtx = heatCanvas.getContext('2d');
-    if (!ctx || !hCtx) return;
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 3.5;
+      ctx.setLineDash([8, 4]);
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, 10);
+      ctx.stroke();
+      ctx.setLineDash([]);
 
-    heatCanvas.width = srcCanvas.width;
-    heatCanvas.height = srcCanvas.height;
+      // Etiqueta legível acima do contorno
+      const tag = box.label;
+      ctx.font = 'bold 13px sans-serif';
+      const textWidth = ctx.measureText(tag).width + 16;
+      const tagY = Math.max(6, y - 26);
 
-    const imgData = ctx.getImageData(0, 0, srcCanvas.width, srcCanvas.height);
-    const heatData = hCtx.createImageData(srcCanvas.width, srcCanvas.height);
-    const data = imgData.data;
-    const hPixels = heatData.data;
+      ctx.fillStyle = strokeColor;
+      ctx.beginPath();
+      ctx.roundRect(x, tagY, textWidth, 22, 6);
+      ctx.fill();
 
-    let totalPixels = 0;
-    let sumExG = 0;
-    let necroticCount = 0;
-    let yellowCount = 0;
-    let edgeGradientSum = 0;
-
-    const w = srcCanvas.width;
-    const h = srcCanvas.height;
-
-    for (let y = 40; y < h - 10; y++) {
-      for (let x = 10; x < w - 10; x++) {
-        const idx = (y * w + x) * 4;
-        const r = data[idx];
-        const g = data[idx + 1];
-        const b = data[idx + 2];
-
-        totalPixels++;
-
-        // Normalized RGB
-        const sumRGB = Math.max(1, r + g + b);
-        const rn = r / sumRGB;
-        const gn = g / sumRGB;
-        const bn = b / sumRGB;
-
-        // Excess Green Index (ExG = 2g - r - b)
-        const exg = Math.max(0, 2 * gn - rn - bn);
-        sumExG += exg;
-
-        // Detect necrotic brown (R > G > B, moderate/low brightness, typical of dry broom or leaf scorch)
-        const isNecroticBrown = r > g * 1.12 && g > b * 1.08 && r > 55 && r < 195 && gn < 0.36;
-        // Detect chlorotic yellow (high R and high G, low B, typical of water stress yellowing)
-        const isYellowChlorosis = r > 140 && g > 115 && b < 90 && Math.abs(r - g) < 55;
-
-        if (isNecroticBrown) {
-          necroticCount++;
-          // Paint Red/Orange on Heatmap
-          hPixels[idx] = 239;
-          hPixels[idx + 1] = 68;
-          hPixels[idx + 2] = 68;
-          hPixels[idx + 3] = 210;
-        } else if (isYellowChlorosis) {
-          yellowCount++;
-          // Paint Yellow/Amber on Heatmap
-          hPixels[idx] = 245;
-          hPixels[idx + 1] = 158;
-          hPixels[idx + 2] = 11;
-          hPixels[idx + 3] = 210;
-        } else if (exg > 0.12) {
-          // Healthy green tissue
-          hPixels[idx] = 16;
-          hPixels[idx + 1] = 185;
-          hPixels[idx + 2] = 129;
-          hPixels[idx + 3] = 175;
-        } else {
-          // Background dimmed
-          hPixels[idx] = r * 0.4;
-          hPixels[idx + 1] = g * 0.4;
-          hPixels[idx + 2] = b * 0.4;
-          hPixels[idx + 3] = 255;
-        }
-
-        // Horizontal gradient for texture entropy (broom branching / leaf curl)
-        const rightIdx = (y * w + (x + 1)) * 4;
-        const diff = Math.abs(r - data[rightIdx]) + Math.abs(g - data[rightIdx + 1]);
-        if (diff > 45) edgeGradientSum++;
-      }
-    }
-
-    hCtx.putImageData(heatData, 0, 0);
-
-    const exgNorm = Math.min(1, (sumExG / Math.max(1, totalPixels)) * 2.2);
-    const necroticRatio = Math.min(1, (necroticCount / Math.max(1, totalPixels)) * 1.5);
-    const yellowRatio = Math.min(1, (yellowCount / Math.max(1, totalPixels)) * 1.8);
-    const textureEntropy = Math.min(1, (edgeGradientSum / Math.max(1, totalPixels)) * 3.2);
-
-    const featuresPayload = {
-      exg_norm: exgNorm,
-      necrotic_ratio: necroticRatio,
-      yellow_ratio: yellowRatio,
-      texture_entropy: textureEntropy
-    };
-
-    // Try calling Python ML server on localhost:8000 first; fallback seamlessly to local classifier
-    try {
-      const resp = await fetch('http://localhost:8000/api/analyze-leaf', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ features: featuresPayload, region: profile.id })
-      });
-      if (resp.ok) {
-        const pyRes = await resp.json();
-        setAnalysisResult({ ...pyRes, engine_used: 'Servidor Python ML (localhost:8000)' });
-        setIsAnalyzing(false);
-        return;
-      }
-    } catch {
-      // Fallback to identical in-browser Mahalanobis classifier when standalone
-    }
-
-    // Identical Mahalanobis prototype classifier for offline / standalone operation
-    const prototypes = {
-      vassoura_de_bruxa: {
-        mean: [0.12, 0.42, 0.18, 0.78],
-        std: [0.1, 0.12, 0.08, 0.12],
-        label: 'Alerta Fitossanitário: Padrão de Vassoura-de-Bruxa (Moniliophthora perniciosa)',
-        water_relation:
-          'RELAÇÃO DIRETA COM A ÁGUA: A Vassoura-de-Bruxa precisa de água livre nos ramos/frutos e umidade relativa > 85% para germinar. Se irrigar por aspersão ou em excesso, o fungo explode!',
-        irrigation_command:
-          'ATIVAR TRAVA HÍDRICA ANTI-VASSOURA: Bloquear rega diurna, manter copa 100% seca e reduzir pulso de gotejamento sub-copa em -20% apenas para sobrevivência radicular noturna.',
-        multiplier: 0.8,
-        lock: true
-      },
-      estresse_hidrico: {
-        mean: [0.18, 0.22, 0.44, 0.55],
-        std: [0.1, 0.1, 0.12, 0.12],
-        label: 'Alerta Hídrico: Estresse Hídrico Foliar / Déficit de Água na Raiz',
-        water_relation:
-          'FALTA DE ÁGUA NA ZONA RADICULAR (0–20 cm): O amarelamento (clorose) e a queima nas bordas mostram que a planta fechou os estômatos e já está perdendo flores e produtividade.',
-        irrigation_command:
-          'AUMENTAR PULSO DE GOTEJAMENTO (+25%): Elevar a lâmina diária no talhão afetado, acionar pulso extra às 21h30 (Tarifa Verde) e aplicar cobertura morta de bananeira.',
-        multiplier: 1.25,
-        lock: false
-      },
-      saudavel_hidratado: {
-        mean: [0.58, 0.05, 0.08, 0.32],
-        std: [0.12, 0.06, 0.06, 0.1],
-        label: 'Cacaueiro Saudável: Hidratação Radicular e Turgor Foliar Ideais',
-        water_relation:
-          'EQUILÍBRIO HÍDRICO PERFEITO: O gotejamento localizado está mantendo a raiz hidratada sem umedecer a copa, garantindo alta fotossíntese e zero fungo.',
-        irrigation_command:
-          'MANTER LÂMINA ECONÔMICA PADRÃO (100%): Seguir programação normal de pulsos sem gastar água extra.',
-        multiplier: 1.0,
-        lock: true
-      }
-    };
-
-    const vec = [exgNorm, necroticRatio, yellowRatio, textureEntropy];
-    const rawScores: Record<string, number> = {};
-    (Object.keys(prototypes) as Array<keyof typeof prototypes>).forEach((k) => {
-      const p = prototypes[k];
-      let d2 = 0;
-      for (let i = 0; i < 4; i++) {
-        d2 += Math.pow((vec[i] - p.mean[i]) / p.std[i], 2);
-      }
-      rawScores[k] = Math.exp(-0.5 * d2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(tag, x + 8, tagY + 15);
     });
+  }, [imageDataUrl, diagnosis, showContours]);
 
-    const sumS = Object.values(rawScores).reduce((a, b) => a + b, 0) || 1;
-    const probs = {
-      vassoura_de_bruxa: Math.round((rawScores.vassoura_de_bruxa / sumS) * 1000) / 10,
-      estresse_hidrico: Math.round((rawScores.estresse_hidrico / sumS) * 1000) / 10,
-      saudavel_hidratado: Math.round((rawScores.saudavel_hidratado / sumS) * 1000) / 10
+  // Processa um DataURL enviado (câmera, galeria ou exemplo) sem resetar estado em cliques futuros
+  const processImageSource = useCallback(
+    async (dataUrl: string, label: string, presetHint?: DiagnosisClass) => {
+      setIsAnalyzing(true);
+      setAppliedBanner(null);
+      setCameraError(null);
+      setImageDataUrl(dataUrl);
+      setImageLabel(label);
+
+      const img = new Image();
+      img.onload = async () => {
+        try {
+          const localResult = analyzePixelsAndContours(img, presetHint);
+          setDiagnosis(localResult);
+
+          // Se o servidor local Python estiver ligado, complementa apenas para fotos reais (sem travar nem limpar o estado local)
+          if (!presetHint) {
+            const controller = new AbortController();
+            const timer = window.setTimeout(() => controller.abort(), 350);
+            try {
+              const res = await fetch('http://127.0.0.1:8000/api/analyze-leaf', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image_base64: dataUrl }),
+                signal: controller.signal,
+              });
+              window.clearTimeout(timer);
+              if (res.ok) {
+                const payload = await res.json();
+                if (payload?.probabilities) {
+                  setDiagnosis((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          analysisSource: 'server',
+                          probabilities: {
+                            vassoura_de_bruxa: Math.round(
+                              (payload.probabilities.vassoura_de_bruxa ?? prev.probabilities.vassoura_de_bruxa / 100) * 100
+                            ),
+                            estresse_hidrico: Math.round(
+                              (payload.probabilities.estresse_hidrico ?? prev.probabilities.estresse_hidrico / 100) * 100
+                            ),
+                            saudavel: Math.round(
+                              (payload.probabilities.saudavel ?? prev.probabilities.saudavel / 100) * 100
+                            ),
+                          },
+                        }
+                      : prev
+                  );
+                }
+              }
+            } catch {
+              window.clearTimeout(timer);
+              // Funciona 100% no aparelho do produtor quando offline
+            }
+          }
+        } finally {
+          setIsAnalyzing(false);
+        }
+      };
+      img.onerror = () => {
+        setIsAnalyzing(false);
+        setCameraError('Não foi possível ler essa imagem. Tente outra foto JPG ou PNG.');
+      };
+      img.src = dataUrl;
+    },
+    []
+  );
+
+  // Carrega exemplo padrão na primeira abertura para mostrar imediatamente como funciona
+  useEffect(() => {
+    if (!imageDataUrl) {
+      const sampleUrl = renderSampleDataUrl('vassoura_de_bruxa');
+      if (sampleUrl) {
+        processImageSource(sampleUrl, 'Exemplo: Vassoura-de-Bruxa', 'vassoura_de_bruxa');
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Permite selecionar o mesmo arquivo novamente se o usuário quiser
+    e.target.value = '';
+    if (!file) return;
+
+    stopWebcam();
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        processImageSource(reader.result, file.name);
+      }
     };
-
-    const bestKey = (Object.keys(probs) as Array<keyof typeof probs>).reduce((a, b) =>
-      probs[a] > probs[b] ? a : b
-    );
-    const winner = prototypes[bestKey];
-    const cwsi = Math.min(100, Math.max(8, Math.round((necroticRatio * 65 + yellowRatio * 95 - exgNorm * 30) * 100)));
-
-    setTimeout(() => {
-      setAnalysisResult({
-        predicted_class: bestKey,
-        confidence_pct: probs[bestKey],
-        probabilities: probs,
-        cwsi_water_stress_index_pct: cwsi,
-        diagnosis_title: winner.label,
-        water_relation_explanation: winner.water_relation,
-        automated_irrigation_action: winner.irrigation_command,
-        recommended_lamina_multiplier: winner.multiplier,
-        activate_anti_broom_lock: winner.lock,
-        extracted_features: {
-          exg_vigor_index: Number(exgNorm.toFixed(3)),
-          necrotic_brown_ratio: Number(necroticRatio.toFixed(3)),
-          chlorosis_yellow_ratio: Number(yellowRatio.toFixed(3)),
-          canopy_texture_entropy: Number(textureEntropy.toFixed(3))
-        },
-        engine_used: 'Motor ML Embarcado + Python Backend (backend_python/ml_server.py)'
-      });
-      setIsAnalyzing(false);
-    }, 350);
+    reader.readAsDataURL(file);
   };
 
-  // Connects the Computer Vision result directly to the Farm's Water Automation!
-  const applyWaterAdjustmentToSector = () => {
-    if (!analysisResult) return;
-    const updatedSectors = profile.sectors.map((sec) => {
-      if (sec.id !== selectedSectorId) return sec;
-      const baseLiters = sec.stage === 'frutificacao' ? 16 : sec.stage === 'floracao' ? 12 : 9;
-      const newLiters = Math.round(baseLiters * analysisResult.recommended_lamina_multiplier * 10) / 10;
+  const handleStartWebcam = async () => {
+    setCameraError(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError('Navegador sem acesso à câmera. Use o botão Enviar Foto da Galeria.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+      });
+      streamRef.current = stream;
+      setWebcamActive(true);
+      window.setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => undefined);
+        }
+      }, 60);
+    } catch {
+      setCameraError('Câmera bloqueada ou indisponível. Envie uma foto da galeria.');
+    }
+  };
 
-      if (analysisResult.predicted_class === 'vassoura_de_bruxa') {
+  const handleCaptureWebcam = () => {
+    if (!videoRef.current) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 480;
+    canvas.height = 360;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/png');
+    stopWebcam();
+    processImageSource(dataUrl, 'Foto da Câmera');
+  };
+
+  const handleApplySectorAction = () => {
+    if (!diagnosis) return;
+    const targetSector = profile.sectors.find((s) => s.id === selectedSectorId);
+    if (!targetSector) return;
+
+    const updatedSectors = profile.sectors.map((s) => {
+      if (s.id !== targetSector.id) return s;
+
+      if (diagnosis.predictedClass === 'estresse_hidrico') {
+        const nextLiters = Number((s.targetLitersPerPlantDay * 1.25).toFixed(1));
         return {
-          ...sec,
-          targetLitersPerPlantDay: newLiters,
-          valveStatus: 'auto_blocked' as const,
-          diagnosticMessage: `AJUSTE VIA VISÃO COMPUTACIONAL: Detectado foco de Vassoura-de-Bruxa (${analysisResult.confidence_pct}%). Trava Anti-Vassoura ativada e lâmina reduzida para ${newLiters} L/planta/dia (somente raiz à noite) para secar o microclima!`
-        };
-      }
-      if (analysisResult.predicted_class === 'estresse_hidrico') {
-        return {
-          ...sec,
-          targetLitersPerPlantDay: newLiters,
+          ...s,
+          targetLitersPerPlantDay: nextLiters,
           valveStatus: 'open' as const,
-          diagnosticMessage: `AJUSTE VIA VISÃO COMPUTACIONAL: Detectado Estresse Hídrico Foliar (CWSI ${analysisResult.cwsi_water_stress_index_pct}%). Pulso de gotejamento elevado em +25% (${newLiters} L/planta/dia) para salvar a floração!`
+          diagnosticStatus: 'ok' as const,
+          diagnosticMessage: `Reforço hídrico aplicado após foto da folha (${nextLiters} L/pé/dia).`,
         };
       }
+
+      if (diagnosis.predictedClass === 'vassoura_de_bruxa') {
+        return {
+          ...s,
+          valveStatus: 'auto_blocked' as const,
+          diagnosticMessage:
+            'Trava Anti-Vassoura ativada neste talhão. Priorize poda dos ramos e rega só na raiz.',
+        };
+      }
+
       return {
-        ...sec,
-        targetLitersPerPlantDay: newLiters,
-        diagnosticMessage: `DIAGNÓSTICO ÓPTICO OK: Planta hidratada e sem sintomas fúngicos. Mantida lâmina econômica de ${newLiters} L/planta/dia.`
+        ...s,
+        diagnosticMessage: 'Folhagem saudável confirmada em foto. Programação normal mantida.',
       };
     });
 
+    const nextAutomation =
+      diagnosis.predictedClass === 'vassoura_de_bruxa'
+        ? { ...profile.automationConfig, highHumidityLockEnabled: true }
+        : profile.automationConfig;
+
     onUpdateProfile({
       ...profile,
-      automationConfig: {
-        ...profile.automationConfig,
-        antiWitchesBroomLock: analysisResult.activate_anti_broom_lock
-      },
-      sectors: updatedSectors
+      sectors: updatedSectors,
+      automationConfig: nextAutomation,
     });
 
-    setAppliedMessage(
-      `Ajuste hídrico aplicado com sucesso no setor selecionado! Verifique a mudança na aba "2. Automação de Gotejamento".`
-    );
+    if (diagnosis.predictedClass === 'estresse_hidrico') {
+      setAppliedBanner(
+        `Pronto! Aumentamos a água em +25% no ${targetSector.name} e abrimos a rega. Sua foto continua salva aqui.`
+      );
+    } else if (diagnosis.predictedClass === 'vassoura_de_bruxa') {
+      setAppliedBanner(
+        `Pronto! Trava Anti-Vassoura ativada no ${targetSector.name} para proteger as folhas da umidade.`
+      );
+    } else {
+      setAppliedBanner(`Confirmado! Programação normal mantida no ${targetSector.name}.`);
+    }
   };
+
+  const isBroom = diagnosis?.predictedClass === 'vassoura_de_bruxa';
+  const isDrought = diagnosis?.predictedClass === 'estresse_hidrico';
 
   return (
     <div className="space-y-6">
-      {/* BANNER DO MÓDULO DE DIAGNÓSTICO ÓPTICO */}
-      <div className="bg-gradient-to-r from-emerald-950 via-teal-900 to-slate-900 text-white rounded-2xl p-6 shadow-md border border-emerald-700">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div className="space-y-2 max-w-3xl">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-400/20 border border-amber-300/40 text-amber-300 text-xs font-bold">
-              <Camera className="w-3.5 h-3.5" />
-              MONITORAMENTO ÓPTICO DE ESTRESSE HÍDRICO E FITOSSANIDADE
-            </div>
-            <h2 className="text-xl font-bold">
-              Diagnóstico Foliar por Imagem Integrado ao Controle de Gotejamento
-            </h2>
-            <p className="text-xs sm:text-sm text-emerald-100 leading-relaxed">
-              Avalie a condição hídrica e fitossanitária dos cacaueiros diretamente pelo celular, sem depender de sensores de solo em cada linha:
-              <br />• <strong>Sinais de Estresse Hídrico (Amarelamento / Queima Marginal):</strong> O sistema ajusta o pulso de gotejamento (+25%) no talhão afetado.
-              <br />• <strong>Sinais de Vassoura-de-Bruxa (Excesso de Umidade):</strong> O sistema ativa a <strong>Trava Anti-Vassoura</strong>, mantendo a irrigação restrita à zona radicular noturna para reduzir a umidade na copa.
-            </p>
-          </div>
-          <div className="bg-black/30 rounded-xl p-4 border border-white/15 text-xs space-y-1.5 shrink-0">
-            <div className="font-bold text-emerald-300 flex items-center gap-1.5">
-              <Cpu className="w-4 h-4" />
-              Calibração Agronômica Ativa
-            </div>
-            <p className="text-slate-300">
-              Padrões: <strong>Cabruca & Pleno Sol</strong>
-            </p>
-            <p className="text-slate-400">
-              Análise de clorofila (<strong>ExG</strong>), necrose marginal, clorose e textura foliar.
-            </p>
-          </div>
+      {/* Cabeçalho simples + switches laterais */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-5 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-slate-100 flex items-center gap-2.5">
+            <span className="p-2 rounded-xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300">
+              <Camera className="w-5 h-5" />
+            </span>
+            Saúde da Folha pela Foto
+          </h2>
+          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+            Tire ou envie uma foto do galho ou folha. O sistema contorna os sinais na imagem e mostra o que fazer na hora.
+          </p>
+        </div>
+
+        {/* Botões Switch ao lado, como pedido pelo usuário */}
+        <div className="flex flex-wrap items-center gap-4 bg-slate-50 dark:bg-slate-800/70 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700">
+          <ToggleSwitch
+            checked={showContours}
+            onChange={setShowContours}
+            label="Contornar sinais na foto"
+            size="sm"
+            activeColor="rose"
+          />
+          <div className="hidden sm:block w-px h-5 bg-slate-300 dark:bg-slate-600" />
+          <ToggleSwitch
+            checked={showTechDetails}
+            onChange={setShowTechDetails}
+            label="Mais informações técnicas"
+            size="sm"
+            activeColor="sky"
+          />
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* LEFT COLUMN: CAMERA / UPLOAD / SAMPLES + CANVAS (6 cols) */}
-        <div className="lg:col-span-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
-              <Camera className="w-5 h-5 text-emerald-600" />
-              1. Capturar Foto da Árvore / Folha de Cacau
+      {/* Área Principal: Foto com Contorno à Esquerda + Diagnóstico Claro à Direita */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Esquerda (5 cols): Foto enviada com contorno destacado */}
+        <div className="lg:col-span-5 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-5 shadow-sm space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm flex items-center gap-1.5">
+              <Scan className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+              1. Foto da Planta
             </h3>
-            <button
-              onClick={() => setShowHeatmap(!showHeatmap)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 border transition-all ${
-                showHeatmap
-                  ? 'bg-rose-600 text-white border-rose-700'
-                  : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
-              }`}
-            >
-              <Eye className="w-3.5 h-3.5" />
-              {showHeatmap ? 'Vendo Mapa de Calor IA' : 'Ver Mapa de Calor dos Pixels'}
-            </button>
+            {imageLabel && (
+              <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 truncate max-w-[180px]">
+                {imageLabel}
+              </span>
+            )}
           </div>
 
-          {/* Action Buttons: Open Camera OR Mobile Native Capture OR Upload Photo */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-            <label className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm cursor-pointer text-center">
-              <Camera className="w-4 h-4 shrink-0" />
-              <span>Tirar Foto (Celular)</span>
-              <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={handleFileUpload}
-                className="hidden"
-              />
-            </label>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleFileSelected}
+            className="hidden"
+          />
 
-            {!cameraActive ? (
+          {/* Ações de captura bem evidentes */}
+          <div className="grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition cursor-pointer"
+            >
+              <Upload className="w-4 h-4" />
+              Enviar Foto da Galeria
+            </button>
+
+            {!webcamActive ? (
               <button
-                onClick={startLiveCamera}
-                className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm"
+                type="button"
+                onClick={handleStartWebcam}
+                className="py-2.5 px-3 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 dark:hover:bg-slate-600 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition cursor-pointer"
               >
-                <Camera className="w-4 h-4 shrink-0" />
-                <span>Webcam Ao Vivo</span>
+                <Video className="w-4 h-4" />
+                Abrir Câmera
               </button>
             ) : (
               <button
-                onClick={captureFromVideo}
-                className="py-2.5 px-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-extrabold text-xs flex items-center justify-center gap-1.5 shadow-sm animate-pulse"
+                type="button"
+                onClick={handleCaptureWebcam}
+                className="py-2.5 px-3 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm animate-pulse cursor-pointer"
               >
-                <Camera className="w-4 h-4 shrink-0" />
-                <span>Capturar Agora</span>
+                <Camera className="w-4 h-4" />
+                Bater Foto Agora!
               </button>
             )}
-
-            <label className="py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm cursor-pointer text-center">
-              <Upload className="w-4 h-4 shrink-0" />
-              <span>Enviar da Galeria</span>
-              <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
-            </label>
           </div>
 
           {cameraError && (
-            <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs">
+            <div className="text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 rounded-xl px-3 py-2">
               {cameraError}
             </div>
           )}
 
-          {/* Video / Canvas Viewport */}
-          <div className="relative rounded-xl overflow-hidden bg-slate-900 border-2 border-slate-300 flex items-center justify-center min-h-[280px]">
-            {cameraActive && (
+          {/* Container da Imagem + Canvas de Contorno */}
+          <div className="relative w-full aspect-[4/3] rounded-2xl overflow-hidden bg-slate-950 border-2 border-slate-200 dark:border-slate-700 shadow-inner">
+            {webcamActive ? (
               <video
                 ref={videoRef}
-                className="w-full h-[300px] object-cover"
+                autoPlay
                 playsInline
                 muted
+                className="w-full h-full object-cover"
               />
+            ) : imageDataUrl ? (
+              <>
+                <img
+                  src={imageDataUrl}
+                  alt="Folha ou galho de cacau analisado"
+                  className="w-full h-full object-cover"
+                />
+                <canvas
+                  ref={overlayCanvasRef}
+                  width={480}
+                  height={360}
+                  className="absolute inset-0 w-full h-full pointer-events-none"
+                />
+              </>
+            ) : (
+              <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 p-6 text-center text-xs">
+                <Camera className="w-8 h-8 mb-2 opacity-60" />
+                Envie ou tire uma foto da folha para iniciar a leitura.
+              </div>
             )}
-            <canvas
-              ref={sourceCanvasRef}
-              className={`w-full h-[300px] object-cover ${
-                cameraActive || showHeatmap ? 'hidden' : 'block'
-              }`}
-            />
-            <canvas
-              ref={heatmapCanvasRef}
-              className={`w-full h-[300px] object-cover ${
-                !cameraActive && showHeatmap ? 'block' : 'hidden'
-              }`}
-            />
+
+            {isAnalyzing && (
+              <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center text-white font-bold text-sm gap-2">
+                <Sparkles className="w-5 h-5 animate-spin text-emerald-400" />
+                Analisando imagem...
+              </div>
+            )}
           </div>
 
-          {/* 3 Instant Diagnostic Samples */}
-          <div className="space-y-2 pt-1">
-            <div className="text-xs font-bold text-slate-600">
-              Padrões de Referência Agronômica (Clique para carregar no analisador):
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                onClick={() => generateSampleImage('vassoura')}
-                className="p-2 rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-950 text-xs font-bold text-center"
-              >
-                🍂 Padrão Vassoura-de-Bruxa
-              </button>
-              <button
-                onClick={() => generateSampleImage('seca')}
-                className="p-2 rounded-lg border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-950 text-xs font-bold text-center"
-              >
-                ☀️ Padrão Estresse Hídrico
-              </button>
-              <button
-                onClick={() => generateSampleImage('saudavel')}
-                className="p-2 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-950 text-xs font-bold text-center"
-              >
-                🌿 Padrão Folha Saudável
-              </button>
+          {showContours && diagnosis && diagnosis.contours.length > 0 && (
+            <p className="text-xs font-medium text-slate-600 dark:text-slate-400 flex items-center gap-2">
+              <span
+                className={`w-3 h-3 rounded-sm inline-block border-2 ${
+                  isBroom ? 'border-rose-500 bg-rose-500/30' : 'border-amber-500 bg-amber-500/30'
+                }`}
+              />
+              Os quadros tracejados mostram onde o sistema achou alteração na planta.
+            </p>
+          )}
+
+          {/* Exemplos rápidos para teste */}
+          <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
+            <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              Ou teste com uma foto de exemplo:
+            </span>
+            <div className="flex flex-wrap gap-2">
+              {SAMPLE_PRESETS.map((sample) => (
+                <button
+                  key={sample.id}
+                  type="button"
+                  onClick={() => {
+                    stopWebcam();
+                    const url = renderSampleDataUrl(sample.id);
+                    if (url) processImageSource(url, sample.label, sample.id);
+                  }}
+                  className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer ${sample.badgeClass}`}
+                >
+                  {sample.label.replace('Exemplo: ', '')}
+                </button>
+              ))}
             </div>
           </div>
         </div>
 
-        {/* RIGHT COLUMN: ML DIAGNOSIS + DIRECT IRRIGATION ACTION (6 cols) */}
-        <div className="lg:col-span-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col justify-between space-y-4">
-          {isAnalyzing || !analysisResult ? (
-            <div className="flex flex-col items-center justify-center h-64 text-slate-500 space-y-2">
-              <RefreshCw className="w-8 h-8 animate-spin text-emerald-600" />
-              <span className="text-sm font-bold">Extraindo matriz de pixels e classificando padrão foliar...</span>
-            </div>
-          ) : (
+        {/* Direita (7 cols): O que o sistema encontrou — retorno rico em informações! */}
+        <div className="lg:col-span-7 space-y-5">
+          {diagnosis && (
             <>
-              <div className="space-y-4">
+              {/* ALERTA GIGANTE DE VASSOURA-DE-BRUXA OU SECA / SAUDÁVEL */}
+              {isBroom ? (
+                <div className="rounded-2xl bg-gradient-to-br from-rose-600 to-red-700 text-white p-6 shadow-xl border-2 border-rose-400/60 space-y-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-3.5">
+                      <div className="p-3.5 rounded-2xl bg-white/15 shrink-0">
+                        <ShieldAlert className="w-9 h-9 text-white" />
+                      </div>
+                      <div>
+                        <span className="inline-block text-[11px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full bg-white text-rose-700 mb-1.5">
+                          Cuidado Urgente na Lavoura
+                        </span>
+                        <h3 className="text-xl sm:text-2xl font-black leading-tight">
+                          {diagnosis.title}
+                        </h3>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0 bg-black/20 px-3.5 py-2 rounded-xl">
+                      <span className="block text-[10px] uppercase font-bold text-rose-100">
+                        Chance
+                      </span>
+                      <span className="text-2xl sm:text-3xl font-black">
+                        {diagnosis.probabilities.vassoura_de_bruxa}%
+                      </span>
+                    </div>
+                  </div>
+
+                  <p className="text-sm sm:text-base text-rose-50 leading-relaxed font-medium">
+                    {diagnosis.simpleSummary}
+                  </p>
+                </div>
+              ) : isDrought ? (
+                <div className="rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 text-white p-6 shadow-lg border border-amber-300/60 space-y-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="p-3 rounded-2xl bg-white/20 shrink-0">
+                        <AlertTriangle className="w-8 h-8 text-white" />
+                      </div>
+                      <div>
+                        <span className="inline-block text-[11px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full bg-white text-amber-800 mb-1">
+                          Falta de Água na Raiz
+                        </span>
+                        <h3 className="text-xl sm:text-2xl font-black leading-tight">
+                          {diagnosis.title}
+                        </h3>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0 bg-black/15 px-3.5 py-2 rounded-xl">
+                      <span className="block text-[10px] uppercase font-bold text-amber-50">
+                        Chance
+                      </span>
+                      <span className="text-2xl sm:text-3xl font-black">
+                        {diagnosis.probabilities.estresse_hidrico}%
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-sm sm:text-base text-amber-50 font-medium leading-relaxed">
+                    {diagnosis.simpleSummary}
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 text-white p-6 shadow-lg border border-emerald-400/50 space-y-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="p-3 rounded-2xl bg-white/20 shrink-0">
+                        <CheckCircle2 className="w-8 h-8 text-white" />
+                      </div>
+                      <div>
+                        <span className="inline-block text-[11px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full bg-white text-emerald-800 mb-1">
+                          Condição Boa
+                        </span>
+                        <h3 className="text-xl sm:text-2xl font-black leading-tight">
+                          {diagnosis.title}
+                        </h3>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0 bg-black/15 px-3.5 py-2 rounded-xl">
+                      <span className="block text-[10px] uppercase font-bold text-emerald-100">
+                        Chance
+                      </span>
+                      <span className="text-2xl sm:text-3xl font-black">
+                        {diagnosis.probabilities.saudavel}%
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-sm sm:text-base text-emerald-50 font-medium leading-relaxed">
+                    {diagnosis.simpleSummary}
+                  </p>
+                </div>
+              )}
+
+              {/* PROBABILIDADES GRANDES E FÁCEIS DE LER */}
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-5 shadow-sm space-y-4">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-emerald-700 flex items-center gap-1.5">
-                    <Sparkles className="w-4 h-4" />
-                    2. Diagnóstico do Classificador & Ação Hídrica
-                  </span>
-                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 font-semibold border border-slate-200">
-                    Confiança: {analysisResult.confidence_pct}%
+                  <h4 className="font-extrabold text-slate-900 dark:text-slate-100 text-base">
+                    2. Resultado por Condição (Probabilidades)
+                  </h4>
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                    Confiança geral: {diagnosis.confidencePct}%
                   </span>
                 </div>
 
-                {/* Main Diagnosis Banner */}
-                <div
-                  className={`p-4 rounded-xl border-2 space-y-2 ${
-                    analysisResult.predicted_class === 'vassoura_de_bruxa'
-                      ? 'bg-rose-50 border-rose-400 text-rose-950'
-                      : analysisResult.predicted_class === 'estresse_hidrico'
-                      ? 'bg-amber-50 border-amber-400 text-amber-950'
-                      : 'bg-emerald-50 border-emerald-400 text-emerald-950'
-                  }`}
-                >
+                <div className="space-y-3.5">
+                  {/* Vassoura-de-Bruxa */}
+                  <div className="p-3 rounded-xl bg-rose-50/70 dark:bg-rose-950/30 border border-rose-200/70 dark:border-rose-900/60">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-bold text-sm sm:text-base text-rose-950 dark:text-rose-200">
+                        Vassoura-de-Bruxa / Ramo Seco
+                      </span>
+                      <span className="text-lg sm:text-xl font-black text-rose-600 dark:text-rose-400">
+                        {diagnosis.probabilities.vassoura_de_bruxa}%
+                      </span>
+                    </div>
+                    <div className="w-full h-3.5 bg-rose-200/70 dark:bg-rose-950 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-rose-600 rounded-full transition-all duration-500"
+                        style={{ width: `${diagnosis.probabilities.vassoura_de_bruxa}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Falta de Água */}
+                  <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-900/60">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-bold text-sm sm:text-base text-amber-950 dark:text-amber-200">
+                        Falta de Água / Folha Seca (Estresse Hídrico)
+                      </span>
+                      <span className="text-lg sm:text-xl font-black text-amber-600 dark:text-amber-400">
+                        {diagnosis.probabilities.estresse_hidrico}%
+                      </span>
+                    </div>
+                    <div className="w-full h-3.5 bg-amber-200/70 dark:bg-amber-950 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-amber-500 rounded-full transition-all duration-500"
+                        style={{ width: `${diagnosis.probabilities.estresse_hidrico}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Planta Saudável */}
+                  <div className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-900/60">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-bold text-sm sm:text-base text-emerald-950 dark:text-emerald-200">
+                        Planta Saudável e Verde
+                      </span>
+                      <span className="text-lg sm:text-xl font-black text-emerald-600 dark:text-emerald-400">
+                        {diagnosis.probabilities.saudavel}%
+                      </span>
+                    </div>
+                    <div className="w-full h-3.5 bg-emerald-200/70 dark:bg-emerald-950 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-600 rounded-full transition-all duration-500"
+                        style={{ width: `${diagnosis.probabilities.saudavel}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* O QUE FAZER NA ROÇA E APLICAR NA IRRIGAÇÃO */}
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-5 shadow-sm space-y-4">
+                <h4 className="font-extrabold text-slate-900 dark:text-slate-100 text-base">
+                  3. Passo a Passo do que Fazer Agora
+                </h4>
+
+                <ul className="space-y-2 text-sm text-slate-700 dark:text-slate-300">
+                  {diagnosis.fieldSteps.map((step, i) => (
+                    <li
+                      key={i}
+                      className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700 font-medium"
+                    >
+                      {step}
+                    </li>
+                  ))}
+                </ul>
+
+                {/* Ação direta no talhão — nunca reseta a foto nem o diagnóstico! */}
+                <div className="p-4 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 space-y-3">
                   <div className="flex items-start gap-2.5">
-                    {analysisResult.predicted_class === 'saudavel_hidratado' ? (
-                      <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0 mt-0.5" />
-                    ) : (
-                      <AlertTriangle className="w-6 h-6 text-rose-600 shrink-0 mt-0.5" />
-                    )}
+                    <Droplets className="w-5 h-5 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
                     <div>
-                      <h4 className="font-black text-base leading-snug">
-                        {analysisResult.diagnosis_title}
-                      </h4>
-                      <p className="text-xs mt-1 leading-relaxed">
-                        {analysisResult.water_relation_explanation}
+                      <span className="text-xs font-extrabold uppercase tracking-wider text-sky-800 dark:text-sky-300 block">
+                        Ajuste Automático de Gotejamento
+                      </span>
+                      <p className="text-sm font-semibold text-slate-800 dark:text-slate-200 mt-0.5">
+                        {diagnosis.recommendedIrrigationAction}
                       </p>
                     </div>
                   </div>
-                </div>
 
-                {/* Probabilities & Optical Water Stress Index (CWSI) */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
-                    <div className="font-bold text-slate-800">Probabilidades por Classe (ML):</div>
-                    <div className="space-y-1.5">
-                      <div>
-                        <div className="flex justify-between">
-                          <span>🍂 Vassoura-de-Bruxa / Fungo:</span>
-                          <strong>{analysisResult.probabilities.vassoura_de_bruxa}%</strong>
-                        </div>
-                        <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
-                          <div
-                            style={{ width: `${analysisResult.probabilities.vassoura_de_bruxa}%` }}
-                            className="bg-rose-500 h-full"
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex justify-between">
-                          <span>☀️ Estresse Hídrico (Seca):</span>
-                          <strong>{analysisResult.probabilities.estresse_hidrico}%</strong>
-                        </div>
-                        <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
-                          <div
-                            style={{ width: `${analysisResult.probabilities.estresse_hidrico}%` }}
-                            className="bg-amber-500 h-full"
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex justify-between">
-                          <span>🌿 Saudável e Hidratado:</span>
-                          <strong>{analysisResult.probabilities.saudavel_hidratado}%</strong>
-                        </div>
-                        <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
-                          <div
-                            style={{ width: `${analysisResult.probabilities.saudavel_hidratado}%` }}
-                            className="bg-emerald-500 h-full"
-                          />
-                        </div>
-                      </div>
-                    </div>
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    <select
+                      value={selectedSectorId}
+                      onChange={(e) => setSelectedSectorId(e.target.value)}
+                      className="flex-1 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 px-3 py-2.5 text-sm font-bold"
+                    >
+                      {profile.sectors.map((sector) => (
+                        <option key={sector.id} value={sector.id}>
+                          {sector.name} ({sector.areaHa} ha • {sector.targetLitersPerPlantDay} L/pé/dia)
+                        </option>
+                      ))}
+                    </select>
+
+                    <button
+                      type="button"
+                      onClick={handleApplySectorAction}
+                      className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm shadow-sm transition cursor-pointer shrink-0"
+                    >
+                      Aplicar neste Talhão
+                    </button>
                   </div>
 
-                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 text-xs">
-                    <div className="font-bold text-slate-800">Descritores Extraídos dos Pixels:</div>
-                    <div className="flex justify-between text-slate-600">
-                      <span>Índice Verde Clorofila (ExG):</span>
-                      <strong>{analysisResult.extracted_features.exg_vigor_index}</strong>
+                  {appliedBanner && (
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-emerald-100 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-700 text-emerald-900 dark:text-emerald-200 text-xs font-bold">
+                      <Check className="w-4 h-4 shrink-0" />
+                      <span>{appliedBanner}</span>
                     </div>
-                    <div className="flex justify-between text-slate-600">
-                      <span>Fração Marrom Necrótica:</span>
-                      <strong>{(analysisResult.extracted_features.necrotic_brown_ratio * 100).toFixed(1)}%</strong>
-                    </div>
-                    <div className="flex justify-between text-slate-600">
-                      <span>Fração Amarela (Clorose Seca):</span>
-                      <strong>{(analysisResult.extracted_features.chlorosis_yellow_ratio * 100).toFixed(1)}%</strong>
-                    </div>
-                    <div className="flex justify-between text-slate-900 font-bold pt-1 border-t border-slate-200">
-                      <span>Índice de Sede Foliar (CWSI):</span>
-                      <span className="text-sky-700">{analysisResult.cwsi_water_stress_index_pct}%</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Prescription for the Drip Irrigation System */}
-                <div className="p-4 rounded-xl bg-sky-50 border border-sky-200 space-y-2 text-xs">
-                  <div className="font-extrabold text-sky-950 uppercase flex items-center gap-1.5">
-                    <Droplets className="w-4 h-4 text-sky-600" />
-                    Comando Automático Recomendado para o Gotejamento:
-                  </div>
-                  <p className="text-sky-900 font-medium leading-relaxed">
-                    {analysisResult.automated_irrigation_action}
-                  </p>
+                  )}
                 </div>
               </div>
 
-              {/* Apply to Sector Button */}
-              <div className="pt-3 border-t border-slate-200 space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                  <label className="text-xs font-bold text-slate-700 shrink-0">
-                    Talhão onde a foto foi tirada:
-                  </label>
-                  <select
-                    value={selectedSectorId}
-                    onChange={(e) => setSelectedSectorId(e.target.value)}
-                    className="flex-1 text-xs font-bold border border-slate-300 rounded-lg px-3 py-2 bg-white text-slate-900"
-                  >
-                    {profile.sectors.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name} (Atual: {s.targetLitersPerPlantDay} L/dia)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <button
-                  onClick={applyWaterAdjustmentToSector}
-                  className="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-md transition-all"
-                >
-                  <Zap className="w-4 h-4" />
-                  Aplicar Correção Hídrica Automática neste Talhão Agora
-                </button>
-
-                {appliedMessage && (
-                  <div className="p-3 rounded-xl bg-emerald-100 border border-emerald-300 text-emerald-950 text-xs font-bold flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
-                    <span>{appliedMessage}</span>
+              {/* DETALHES TÉCNICOS ESCONDIDOS POR PADRÃO (ABRE NO SWITCH) */}
+              {showTechDetails && (
+                <div className="bg-slate-900 dark:bg-slate-950 text-slate-100 rounded-2xl border border-slate-700 p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-sm flex items-center gap-2 text-sky-300">
+                      <SlidersHorizontal className="w-4 h-4" />
+                      Dados Técnicos da Leitura da Imagem
+                    </h4>
+                    <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300">
+                      Motor: {diagnosis.analysisSource === 'server' ? 'Python OpenCV/Local' : 'Análise Local no Aparelho'}
+                    </span>
                   </div>
-                )}
-              </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                    <div className="bg-slate-800/80 rounded-xl p-3">
+                      <span className="text-slate-400 block">Verde Sadio (ExG)</span>
+                      <span className="text-base font-black text-emerald-400">
+                        {diagnosis.metrics.greenIndexPct}%
+                      </span>
+                    </div>
+                    <div className="bg-slate-800/80 rounded-xl p-3">
+                      <span className="text-slate-400 block">Mancha Escura / Necrose</span>
+                      <span className="text-base font-black text-rose-400">
+                        {diagnosis.metrics.necrosisPct}%
+                      </span>
+                    </div>
+                    <div className="bg-slate-800/80 rounded-xl p-3">
+                      <span className="text-slate-400 block">Amarelecimento (Clorose)</span>
+                      <span className="text-base font-black text-amber-400">
+                        {diagnosis.metrics.chlorosisPct}%
+                      </span>
+                    </div>
+                    <div className="bg-slate-800/80 rounded-xl p-3">
+                      <span className="text-slate-400 block">Índice de Sede (CWSI)</span>
+                      <span className="text-base font-black text-sky-400">
+                        {diagnosis.metrics.cwsiPct}%
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>

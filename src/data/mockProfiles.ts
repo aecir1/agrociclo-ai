@@ -509,7 +509,7 @@ export const INITIAL_EMERGENCY_ACTIONS: EmergencyAction[] = [
     id: 'em-6',
     phase: 'durante',
     title: 'Flushing (Retrolavagem) de Linhas com Alerta de Entupimento',
-    description: 'Abrir finais de linha nos setores onde o AgroCiclo AI detectou queda de vazão (>15%) e subida de pressão para expulsar precipitados.',
+    description: 'Abrir finais de linha nos setores onde o AgroCiclo detectou queda de vazão (>15%) e subida de pressão para expulsar precipitados.',
     costLevel: 'Gratuito / Operacional',
     autonomyGainDays: 4,
     completed: false,

@@ -9,11 +9,7 @@ import {
   Play,
   Pause,
   RefreshCw,
-  Sliders,
-  Activity,
   Sprout,
-  Wrench,
-  Flame,
   Plus,
   Scissors,
   Trash2,
@@ -21,24 +17,25 @@ import {
   Mountain
 } from 'lucide-react';
 import { PropertyProfile, PhenologicalStage, IrrigationSector } from '../types';
+import { ToggleSwitch } from './ToggleSwitch';
 
 interface AutomationTabProps {
   profile: PropertyProfile;
   onUpdateProfile: (updated: PropertyProfile) => void;
 }
 
-const STAGE_LITERS_MAP: Record<'ilheus' | 'oeste', Record<PhenologicalStage, { liters: number; label: string; kc: string }>> = {
+const STAGE_LITERS_MAP: Record<'ilheus' | 'oeste', Record<PhenologicalStage, { liters: number; label: string }>> = {
   ilheus: {
-    mudas: { liters: 6, label: 'Mudas / Enxertia (< 2 anos)', kc: 'Kc 0.65 — Bulbo superficial' },
-    vegetativo: { liters: 8, label: 'Vegetativo / Lançamento Foliar', kc: 'Kc 0.80 — Manutenção' },
-    floracao: { liters: 12, label: 'Floração e Peco de Bilros', kc: 'Kc 1.05 — Fase crítica de queda' },
-    frutificacao: { liters: 15, label: 'Enchimento de Frutos', kc: 'Kc 1.15 — Demanda máxima Cabruca' }
+    mudas: { liters: 6, label: 'Mudas (< 2 anos)' },
+    vegetativo: { liters: 8, label: 'Folha / Vegetativo' },
+    floracao: { liters: 12, label: 'Floração e Peco' },
+    frutificacao: { liters: 15, label: 'Frutos Enchendo' }
   },
   oeste: {
-    mudas: { liters: 9, label: 'Mudas a Pleno Sol (< 2 anos)', kc: 'Kc 0.75 — Quebra-vento + Mulch' },
-    vegetativo: { liters: 13, label: 'Vegetativo / Formação de Copa', kc: 'Kc 0.95 — Ajuste osmótico' },
-    floracao: { liters: 16, label: 'Floração Intensa (Indução)', kc: 'Kc 1.10 — +30% flores (Hutcheon)' },
-    frutificacao: { liters: 20, label: 'Frutificação Alta Performance (3.000 kg/ha)', kc: 'Kc 1.25 — 20 L/planta/dia (CPCRI)' }
+    mudas: { liters: 9, label: 'Mudas (< 2 anos)' },
+    vegetativo: { liters: 13, label: 'Folha / Vegetativo' },
+    floracao: { liters: 16, label: 'Floração Intensa' },
+    frutificacao: { liters: 20, label: 'Frutificação Alta' }
   }
 };
 
@@ -47,17 +44,15 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateP
   const [showNewSectorForm, setShowNewSectorForm] = useState<boolean>(false);
   const [newSectorName, setNewSectorName] = useState<string>('');
   const [newSectorHa, setNewSectorHa] = useState<number>(3);
-  const [newSectorClone, setNewSectorClone] = useState<string>('CEPEC-2002 / PH-16');
   const [newSectorStage, setNewSectorStage] = useState<PhenologicalStage>('floracao');
   const [newSectorTerrain, setNewSectorTerrain] = useState<'baixada' | 'meia_encosta' | 'topo'>('meia_encosta');
   const [subtractFromLargest, setSubtractFromLargest] = useState<boolean>(true);
 
   const showToast = (msg: string) => {
     setActionFeedback(msg);
-    setTimeout(() => setActionFeedback(null), 5000);
+    setTimeout(() => setActionFeedback(null), 4000);
   };
 
-  // Recalcula área de cacau e plantas totais a partir dos talhões
   const commitSectorsUpdate = (nextSectors: IrrigationSector[], feedback: string) => {
     const sumHa = Number(nextSectors.reduce((acc, s) => acc + s.areaHa, 0).toFixed(2));
     const sumPlants = nextSectors.reduce((acc, s) => acc + s.plantsCount, 0);
@@ -78,11 +73,10 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateP
     const baseLiters = STAGE_LITERS_MAP[profile.id][newSectorStage].liters;
     const litersPerPlant = Math.round(baseLiters * deficitFactor * 10) / 10;
 
-    let updatedSectors = [...profile.sectors];
+    const updatedSectors = [...profile.sectors];
     let finalHa = ha;
 
     if (subtractFromLargest && updatedSectors.length > 0) {
-      // Encontra o maior talhão para dividir os hectares dele
       let maxIdx = 0;
       for (let i = 1; i < updatedSectors.length; i++) {
         if (updatedSectors[i].areaHa > updatedSectors[maxIdx].areaHa) maxIdx = i;
@@ -110,18 +104,18 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateP
       newSectorName.trim() ||
       `Talhão ${String(nextNum).padStart(2, '0')} — ${
         newSectorTerrain === 'baixada'
-          ? 'Baixada / Várzea'
+          ? 'Baixada'
           : newSectorTerrain === 'topo'
           ? 'Topo de Morro'
           : 'Meia Encosta'
       }`;
 
-    const newSector: IrrigationSector = {
+    updatedSectors.push({
       id: `sec-custom-${Date.now()}`,
       name: labelName,
       areaHa: finalHa,
       plantsCount: newPlants,
-      cloneType: newSectorClone.trim() || 'Clone Cacaueiro',
+      cloneType: 'Cacaueiro',
       stage: newSectorStage,
       targetLitersPerPlantDay: litersPerPlant,
       nominalFlowLh: newNomFlow,
@@ -130,26 +124,19 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateP
       nominalPressureBar: profile.id === 'ilheus' ? 1.8 : 2.0,
       valveStatus: 'scheduled',
       diagnosticStatus: 'ok',
-      diagnosticMessage: 'Nova partição criada! Pronta para receber pulsos automáticos no cabeçal.',
+      diagnosticMessage: 'Pronto para regar automaticamente.',
       soilMoisturePct: 70,
       osmoticAdjustmentActive: profile.automationConfig.osmoticDeficitMode,
       terrainZone: newSectorTerrain
-    };
+    });
 
-    updatedSectors.push(newSector);
     setShowNewSectorForm(false);
     setNewSectorName('');
-    commitSectorsUpdate(
-      updatedSectors,
-      `Partição "${labelName}" (${finalHa} ha • ${newPlants.toLocaleString('pt-BR')} pés) adicionada com sucesso!`
-    );
+    commitSectorsUpdate(updatedSectors, `Talhão "${labelName}" (${finalHa} ha) criado!`);
   };
 
   const handleSplitSectorInTwo = (sector: IrrigationSector) => {
-    if (sector.areaHa < 1) {
-      showToast('Este talhão já tem menos de 1 ha; ajuste os hectares diretamente.');
-      return;
-    }
+    if (sector.areaHa < 1) return;
     const halfA = Number((sector.areaHa / 2).toFixed(2));
     const halfB = Number((sector.areaHa - halfA).toFixed(2));
     const plantsA = Math.round(sector.plantsCount * (halfA / sector.areaHa));
@@ -180,14 +167,11 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateP
         nominalFlowLh: nomFlowB,
         measuredFlowLh: Math.round(nomFlowB * 0.99),
         diagnosticStatus: 'ok',
-        diagnosticMessage: 'Partição B dividida e calibrada automaticamente.'
+        diagnosticMessage: 'Funcionando normal.'
       }
     );
 
-    commitSectorsUpdate(
-      nextSectors,
-      `Talhão dividido em 2 partições: ${halfA} ha + ${halfB} ha!`
-    );
+    commitSectorsUpdate(nextSectors, `Dividido em ${halfA} ha + ${halfB} ha!`);
   };
 
   const handleResizeSectorHa = (sectorId: string, deltaHa: number) => {
@@ -205,26 +189,27 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateP
         measuredFlowLh: Math.round(nextNomFlow * ratio)
       };
     });
-    commitSectorsUpdate(nextSectors, 'Divisão de hectares do talhão atualizada.');
+    commitSectorsUpdate(nextSectors, 'Tamanho do talhão atualizado.');
   };
 
   const handleDeleteSector = (sectorId: string) => {
     if (profile.sectors.length <= 1) return;
-    const nextSectors = profile.sectors.filter((s) => s.id !== sectorId);
-    commitSectorsUpdate(nextSectors, 'Partição removida e área total recalculada.');
+    commitSectorsUpdate(
+      profile.sectors.filter((s) => s.id !== sectorId),
+      'Talhão removido.'
+    );
   };
 
-  const toggleAutomationConfig = (key: keyof PropertyProfile['automationConfig']) => {
+  const setAutomationRule = (key: keyof PropertyProfile['automationConfig'], value: boolean) => {
     if (key === 'electricalConductivityDsm') return;
-    const updated = {
+    onUpdateProfile({
       ...profile,
       automationConfig: {
         ...profile.automationConfig,
-        [key]: !profile.automationConfig[key]
+        [key]: value
       }
-    };
-    onUpdateProfile(updated);
-    showToast(`Regra de automação atualizada com sucesso no controlador de borda!`);
+    });
+    showToast('Regra salva com sucesso!');
   };
 
   const handleStageChange = (sectorId: string, newStage: PhenologicalStage) => {
@@ -232,414 +217,415 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateP
     const deficitFactor = profile.automationConfig.osmoticDeficitMode ? 0.85 : 1.0;
     const adjustedLiters = Math.round(stageConfig.liters * deficitFactor * 10) / 10;
 
-    const updatedSectors = profile.sectors.map((sec) => {
-      if (sec.id !== sectorId) return sec;
-      return {
-        ...sec,
-        stage: newStage,
-        targetLitersPerPlantDay: adjustedLiters
-      };
+    onUpdateProfile({
+      ...profile,
+      sectors: profile.sectors.map((sec) =>
+        sec.id === sectorId ? { ...sec, stage: newStage, targetLitersPerPlantDay: adjustedLiters } : sec
+      )
     });
-
-    onUpdateProfile({ ...profile, sectors: updatedSectors });
-    showToast(`Lâmina do ${sectorId.toUpperCase()} recalculada automaticamente para ${adjustedLiters} L/planta/dia (${stageConfig.label}).`);
+    showToast(`Lâmina ajustada para ${adjustedLiters} L/pé/dia (${stageConfig.label}).`);
   };
 
   const toggleValve = (sector: IrrigationSector) => {
-    // Check if Anti-Witches' Broom Lock prevents opening in Ilhéus when RH > 85%
     if (
       sector.valveStatus !== 'open' &&
       profile.automationConfig.antiWitchesBroomLock &&
       profile.weather.airHumidityPct >= 85
     ) {
-      const updatedSectors = profile.sectors.map((s) =>
-        s.id === sector.id
-          ? {
-              ...s,
-              valveStatus: 'auto_blocked' as const,
-              diagnosticMessage: `BLOQUEIO FITOSSANITÁRIO: Umidade do ar em ${profile.weather.airHumidityPct}% (>85%). Irrigação suspensa para impedir germinação de esporos da Vassoura-de-Bruxa!`
-            }
-          : s
-      );
-      onUpdateProfile({ ...profile, sectors: updatedSectors });
-      showToast(`Trava Anti-Vassoura impediu abertura imediata (UR ${profile.weather.airHumidityPct}%). Agendado para janela segura!`);
+      onUpdateProfile({
+        ...profile,
+        sectors: profile.sectors.map((s) =>
+          s.id === sector.id
+            ? {
+                ...s,
+                valveStatus: 'auto_blocked',
+                diagnosticMessage: `Bloqueada: umidade em ${profile.weather.airHumidityPct}% (risco de Vassoura). Abre à noite.`
+              }
+            : s
+        )
+      });
+      showToast(`Trava Anti-Vassoura impediu ligar agora (UR ${profile.weather.airHumidityPct}%).`);
       return;
     }
 
     const nextStatus = sector.valveStatus === 'open' ? 'closed' : 'open';
-    const updatedSectors = profile.sectors.map((s) =>
-      s.id === sector.id
-        ? {
-            ...s,
-            valveStatus: nextStatus as 'open' | 'closed',
-            diagnosticMessage:
-              nextStatus === 'open'
-                ? 'Válvula solenoide aberta via comando local LoRa. Entregando água e nutrientes direto na zona radicular.'
-                : 'Válvula fechada manualmente pelo operador.'
-          }
-        : s
-    );
-    onUpdateProfile({ ...profile, sectors: updatedSectors });
-    showToast(`Válvula do ${sector.name} ${nextStatus === 'open' ? 'ABERTA' : 'FECHADA'}.`);
+    onUpdateProfile({
+      ...profile,
+      sectors: profile.sectors.map((s) =>
+        s.id === sector.id
+          ? {
+              ...s,
+              valveStatus: nextStatus,
+              diagnosticMessage:
+                nextStatus === 'open' ? 'Irrigando na raiz.' : 'Válvula desligada pelo operador.'
+            }
+          : s
+      )
+    });
+    showToast(`${sector.name}: ${nextStatus === 'open' ? 'Rega LIGADA' : 'Rega PAUSADA'}.`);
   };
 
   const handleFlushCloggedLine = (sectorId: string) => {
-    const updatedSectors = profile.sectors.map((s) => {
-      if (s.id !== sectorId) return s;
-      return {
-        ...s,
-        measuredFlowLh: Math.round(s.nominalFlowLh * 0.99),
-        pressureBar: s.nominalPressureBar,
-        diagnosticStatus: 'ok' as const,
-        diagnosticMessage: 'Retrolavagem (Flushing) concluída! Pressão normalizada e vazão dos gotejadores restaurada em 99%.'
-      };
+    onUpdateProfile({
+      ...profile,
+      sectors: profile.sectors.map((s) =>
+        s.id === sectorId
+          ? {
+              ...s,
+              measuredFlowLh: Math.round(s.nominalFlowLh * 0.99),
+              pressureBar: s.nominalPressureBar,
+              diagnosticStatus: 'ok',
+              diagnosticMessage: 'Mangueiras desentupidas! Vazão normalizada.'
+            }
+          : s
+      )
     });
-    onUpdateProfile({ ...profile, sectors: updatedSectors });
-    showToast('Válvula de fim de linha aberta por 3 min: sedimentos expulsos e vazão normalizada!');
-  };
-
-  const handleSimulateLeak = (sectorId: string) => {
-    const updatedSectors = profile.sectors.map((s) => {
-      if (s.id !== sectorId) return s;
-      return {
-        ...s,
-        measuredFlowLh: Math.round(s.nominalFlowLh * 1.32), // +32% flow spike!
-        pressureBar: Number((s.nominalPressureBar * 0.65).toFixed(2)), // Pressure drop!
-        valveStatus: 'auto_blocked' as const,
-        diagnosticStatus: 'leak_alert' as const,
-        diagnosticMessage: 'EMERGÊNCIA HIDRÁULICA: Vazão disparou +32% e pressão caiu para 65%. Mangueira secundária rompida! Válvula solenoide FECHADA AUTOMATICAMENTE para salvar o reservatório.'
-      };
-    });
-    onUpdateProfile({ ...profile, sectors: updatedSectors });
-    showToast('Simulação de rompimento: O sistema detectou pico de vazão (+32%) e fechou a válvula automaticamente!');
+    showToast('Limpeza (Flushing) feita com sucesso!');
   };
 
   const handleRepairLeak = (sectorId: string) => {
-    const updatedSectors = profile.sectors.map((s) => {
-      if (s.id !== sectorId) return s;
-      return {
-        ...s,
-        measuredFlowLh: Math.round(s.nominalFlowLh * 0.99),
-        pressureBar: s.nominalPressureBar,
-        valveStatus: 'scheduled' as const,
-        diagnosticStatus: 'ok' as const,
-        diagnosticMessage: 'Reparo de mangueira confirmado. Curva de pressão e vazão estável no cabeçal.'
-      };
+    onUpdateProfile({
+      ...profile,
+      sectors: profile.sectors.map((s) =>
+        s.id === sectorId
+          ? {
+              ...s,
+              measuredFlowLh: Math.round(s.nominalFlowLh * 0.99),
+              pressureBar: s.nominalPressureBar,
+              valveStatus: 'scheduled',
+              diagnosticStatus: 'ok',
+              diagnosticMessage: 'Mangueira consertada e válvula liberada.'
+            }
+          : s
+      )
     });
-    onUpdateProfile({ ...profile, sectors: updatedSectors });
-    showToast('Reparo registrado e setor reabilitado para operação!');
+    showToast('Reparo confirmado!');
   };
 
-  const totalDailyLiters = profile.sectors.reduce(
-    (acc, s) => acc + s.plantsCount * s.targetLitersPerPlantDay,
-    0
-  );
-  const totalDailyM3 = Math.round((totalDailyLiters / 1000) * 10) / 10;
-  const sprinklerEquivalentM3 = Math.round(totalDailyM3 * (535 / 224) * 10) / 10;
-  const dailySavedM3 = Math.round((sprinklerEquivalentM3 - totalDailyM3) * 10) / 10;
+  const handleSimulateLeak = (sectorId: string) => {
+    onUpdateProfile({
+      ...profile,
+      sectors: profile.sectors.map((s) =>
+        s.id === sectorId
+          ? {
+              ...s,
+              measuredFlowLh: Math.round(s.nominalFlowLh * 1.32),
+              pressureBar: Number((s.nominalPressureBar * 0.65).toFixed(2)),
+              valveStatus: 'auto_blocked',
+              diagnosticStatus: 'leak_alert',
+              diagnosticMessage: 'Mangueira furada detectada! Bomba travada para não perder água.'
+            }
+          : s
+      )
+    });
+    showToast('Vazamento detectado e válvula travada automaticamente!');
+  };
+
+  const totalDailyM3 =
+    Math.round(
+      (profile.sectors.reduce((acc, s) => acc + s.plantsCount * s.targetLitersPerPlantDay, 0) / 1000) * 10
+    ) / 10;
+  const sprinklerM3 = Math.round(totalDailyM3 * (535 / 224) * 10) / 10;
+  const savedM3 = Math.round((sprinklerM3 - totalDailyM3) * 10) / 10;
+  const openCount = profile.sectors.filter((s) => s.valveStatus === 'open').length;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Toast Notification */}
       {actionFeedback && (
-        <div className="bg-emerald-900 text-white px-4 py-3 rounded-xl shadow-lg flex items-center justify-between border border-emerald-600 animate-pulse">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-            <span>{actionFeedback}</span>
-          </div>
-          <button onClick={() => setActionFeedback(null)} className="text-xs text-emerald-200 hover:text-white">
+        <div className="bg-emerald-700 text-white px-4 py-3 rounded-2xl shadow-lg flex items-center justify-between text-xs font-bold">
+          <span className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            {actionFeedback}
+          </span>
+          <button type="button" onClick={() => setActionFeedback(null)} className="underline">
             Fechar
           </button>
         </div>
       )}
 
-      {/* Top Architecture Banner: Why "Sensor-Lite" Automation solves FAEB Slides 20-21 */}
-      <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white rounded-2xl p-6 shadow-md border border-emerald-800/50">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div className="space-y-2 max-w-3xl">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 text-xs font-semibold">
-              <Wrench className="w-3.5 h-3.5" />
-              ARQUITETURA "SENSOR-LITE" DE BAIXO CUSTO (SEM MALHA CARA NO SOLO)
-            </div>
-            <h2 className="text-xl font-bold">
-              Automação de Gotejamento no Cabeçal + Balanço Hídrico Evapotranspirativo
-            </h2>
-            <p className="text-slate-300 text-sm leading-relaxed">
-              Pequenos e médios produtores não conseguem pagar nem manter dezenas de sensores enterrados na roça (que quebram ou perdem sinal). O <strong>AgroCiclo AI</strong> concentra o hardware em <strong>1 único nó no cabeçal da bomba/reservatório</strong> (Hidrômetro de pulso + Sensor de pressão + Válvulas solenoides via LoRa Offline), cruzando a vazão medida com o clima e estágio fenológico do cacau.
-            </p>
-          </div>
-          <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4 border border-white/15 shrink-0 min-w-[240px]">
-            <div className="text-xs text-emerald-300 font-semibold uppercase tracking-wider">Economia Hoje vs. Aspersão</div>
-            <div className="text-3xl font-extrabold text-white mt-1">+{dailySavedM3} m³/dia</div>
-            <div className="text-xs text-slate-300 mt-1">
-              Demanda Gotejo: <strong>{totalDailyM3} m³/dia</strong> (vs. {sprinklerEquivalentM3} m³ aspersão)
-            </div>
-            <div className="mt-2 pt-2 border-t border-white/10 flex items-center gap-1.5 text-xs text-amber-300">
-              <Zap className="w-3.5 h-3.5" />
-              <span>Custo estimado do kit cabeçal: ~R$ 680</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Regras Inteligentes de Automação (Toggles) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Rule 1: Anti-Vassoura */}
-        <div
-          onClick={() => toggleAutomationConfig('antiWitchesBroomLock')}
-          className={`cursor-pointer rounded-xl p-4 border transition-all ${
-            profile.automationConfig.antiWitchesBroomLock
-              ? 'bg-emerald-50 border-emerald-500 shadow-sm'
-              : 'bg-white border-slate-200 opacity-75 hover:opacity-100'
-          }`}
-        >
-          <div className="flex items-center justify-between mb-2">
-            <span className="p-2 rounded-lg bg-emerald-600 text-white">
-              <ShieldAlert className="w-4 h-4" />
-            </span>
-            <span
-              className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
-                profile.automationConfig.antiWitchesBroomLock
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-slate-200 text-slate-600'
-              }`}
-            >
-              {profile.automationConfig.antiWitchesBroomLock ? 'ATIVA' : 'DESATIVADA'}
-            </span>
-          </div>
-          <h3 className="font-bold text-slate-900 text-sm">Trava Fitossanitária Anti-Vassoura</h3>
-          <p className="text-xs text-slate-600 mt-1">
-            Suspende pulsos se a Umidade Relativa passar de 85% (Atual: <strong>{profile.weather.airHumidityPct}%</strong>), mantendo a copa seca contra <em>Moniliophthora</em>.
-          </p>
-        </div>
-
-        {/* Rule 2: Tarifa Verde */}
-        <div
-          onClick={() => toggleAutomationConfig('greenTariffSync')}
-          className={`cursor-pointer rounded-xl p-4 border transition-all ${
-            profile.automationConfig.greenTariffSync
-              ? 'bg-sky-50 border-sky-500 shadow-sm'
-              : 'bg-white border-slate-200 opacity-75 hover:opacity-100'
-          }`}
-        >
-          <div className="flex items-center justify-between mb-2">
-            <span className="p-2 rounded-lg bg-sky-600 text-white">
-              <Zap className="w-4 h-4" />
-            </span>
-            <span
-              className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
-                profile.automationConfig.greenTariffSync
-                  ? 'bg-sky-600 text-white'
-                  : 'bg-slate-200 text-slate-600'
-              }`}
-            >
-              {profile.automationConfig.greenTariffSync ? 'ATIVA (-38% R$)' : 'DESATIVADA'}
-            </span>
-          </div>
-          <h3 className="font-bold text-slate-900 text-sm">Sincronia Tarifa Verde (Noturna)</h3>
-          <p className="text-xs text-slate-600 mt-1">
-            Prioriza bombeamento entre 21h30 e 06h00 (Horário Fora de Ponta Coelba), cortando 38% do custo elétrico e a evaporação solar.
-          </p>
-        </div>
-
-        {/* Rule 3: Ajuste Osmótico */}
-        <div
-          onClick={() => toggleAutomationConfig('osmoticDeficitMode')}
-          className={`cursor-pointer rounded-xl p-4 border transition-all ${
-            profile.automationConfig.osmoticDeficitMode
-              ? 'bg-amber-50 border-amber-500 shadow-sm'
-              : 'bg-white border-slate-200 opacity-75 hover:opacity-100'
-          }`}
-        >
-          <div className="flex items-center justify-between mb-2">
-            <span className="p-2 rounded-lg bg-amber-600 text-white">
-              <Sprout className="w-4 h-4" />
-            </span>
-            <span
-              className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
-                profile.automationConfig.osmoticDeficitMode
-                  ? 'bg-amber-600 text-white'
-                  : 'bg-slate-200 text-slate-600'
-              }`}
-            >
-              {profile.automationConfig.osmoticDeficitMode ? 'ATIVO (-15% Água)' : 'PADRÃO 100%'}
-            </span>
-          </div>
-          <h3 className="font-bold text-slate-900 text-sm">Estímulo de Ajuste Osmótico Radicular</h3>
-          <p className="text-xs text-slate-600 mt-1">
-            Aplica déficit controlado de 15% (Moser et al., 2010), estimulando as raízes finas a concentrar solutos e buscar água sem perder produção.
-          </p>
-        </div>
-
-        {/* Rule 4: Modo Offline LoRa */}
-        <div
-          onClick={() => toggleAutomationConfig('offlineLoRaMode')}
-          className={`cursor-pointer rounded-xl p-4 border transition-all ${
-            profile.automationConfig.offlineLoRaMode
-              ? 'bg-indigo-50 border-indigo-500 shadow-sm'
-              : 'bg-white border-slate-200 opacity-75 hover:opacity-100'
-          }`}
-        >
-          <div className="flex items-center justify-between mb-2">
-            <span className="p-2 rounded-lg bg-indigo-600 text-white">
-              <WifiOff className="w-4 h-4" />
-            </span>
-            <span
-              className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
-                profile.automationConfig.offlineLoRaMode
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-slate-200 text-slate-600'
-              }`}
-            >
-              {profile.automationConfig.offlineLoRaMode ? 'OFFLINE-FIRST' : 'ONLINE ONLY'}
-            </span>
-          </div>
-          <h3 className="font-bold text-slate-900 text-sm">Operação Autônoma Sem Internet</h3>
-          <p className="text-xs text-slate-600 mt-1">
-            O microcontrolador executa o calendário de rega e fecha válvulas em caso de vazamento mesmo se a fazenda ficar 100% sem sinal de internet.
-          </p>
-        </div>
-      </div>
-
-      {/*Controle por Talhão + Diagnóstico de Vazamentos e Entupimentos */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-slate-50">
+      {/* Compact Top Summary KPI Strip (Zero wall of text!) */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-              <Sliders className="w-5 h-5 text-emerald-600" />
-              Controle de Setores de Gotejamento & Diagnóstico Hidráulico de Perdas Ocultas
-            </h3>
-            <p className="text-xs text-slate-600 mt-0.5">
-              Altere o estágio da planta para ajustar a lâmina d'água ou simule falhas hidráulicas (entupimento de gotejador vs. mangueira rompida).
+            <div className="text-xs font-bold text-slate-500 dark:text-slate-400">Economia Hoje</div>
+            <div className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
+              +{savedM3} m³/dia
+            </div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">vs. rega por aspersão</div>
+          </div>
+          <div className="w-11 h-11 rounded-2xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+            <Droplets className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between">
+          <div>
+            <div className="text-xs font-bold text-slate-500 dark:text-slate-400">Gasto no Gotejo</div>
+            <div className="text-2xl font-black text-slate-900 dark:text-white">
+              {totalDailyM3} m³/dia
+            </div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+              {profile.cacaoAreaHa} ha • {profile.estimatedPlants.toLocaleString('pt-BR')} pés
+            </div>
+          </div>
+          <div className="w-11 h-11 rounded-2xl bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 flex items-center justify-center">
+            <Sprout className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 rounded-2xl p-4 border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-between">
+          <div>
+            <div className="text-xs font-bold text-slate-500 dark:text-slate-400">Válvulas Ligadas</div>
+            <div className="text-2xl font-black text-slate-900 dark:text-white">
+              {openCount} de {profile.sectors.length}
+            </div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">Setores no sistema</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowNewSectorForm((v) => !v)}
+            className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-sm"
+          >
+            <Plus className="w-4 h-4" />
+            Novo Talhão
+          </button>
+        </div>
+      </div>
+
+      {/* 4 Clear Interactive Switch Cards (Unmistakably Switches!) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        <div
+          onClick={() => setAutomationRule('antiWitchesBroomLock', !profile.automationConfig.antiWitchesBroomLock)}
+          className={`cursor-pointer rounded-2xl p-4 border transition-all flex flex-col justify-between gap-3 ${
+            profile.automationConfig.antiWitchesBroomLock
+              ? 'bg-emerald-50/80 dark:bg-emerald-950/35 border-emerald-400 dark:border-emerald-700 shadow-sm'
+              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center">
+              <ShieldAlert className="w-4 h-4" />
+            </div>
+            <ToggleSwitch
+              checked={profile.automationConfig.antiWitchesBroomLock}
+              onChange={(v) => setAutomationRule('antiWitchesBroomLock', v)}
+              activeColor="emerald"
+              ariaLabel="Trava Anti-Vassoura"
+            />
+          </div>
+          <div>
+            <div className="font-bold text-sm text-slate-900 dark:text-white">
+              Trava Anti-Vassoura
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+              Pausa a rega se o ar passar de 85% de umidade.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="flex items-center gap-2 text-xs font-medium text-slate-600 bg-white px-3 py-2 rounded-xl border border-slate-200">
-              <Activity className="w-4 h-4 text-sky-600" />
-              <span>Total: <strong>{profile.cacaoAreaHa} ha</strong> ({profile.sectors.length} talhões)</span>
+        </div>
+
+        <div
+          onClick={() => setAutomationRule('greenTariffSync', !profile.automationConfig.greenTariffSync)}
+          className={`cursor-pointer rounded-2xl p-4 border transition-all flex flex-col justify-between gap-3 ${
+            profile.automationConfig.greenTariffSync
+              ? 'bg-sky-50/80 dark:bg-sky-950/35 border-sky-400 dark:border-sky-700 shadow-sm'
+              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <div className="w-9 h-9 rounded-xl bg-sky-600 text-white flex items-center justify-center">
+              <Zap className="w-4 h-4" />
+            </div>
+            <ToggleSwitch
+              checked={profile.automationConfig.greenTariffSync}
+              onChange={(v) => setAutomationRule('greenTariffSync', v)}
+              activeColor="sky"
+              ariaLabel="Regar à Noite Tarifa Verde"
+            />
+          </div>
+          <div>
+            <div className="font-bold text-sm text-slate-900 dark:text-white">
+              Regar à Noite (Tarifa Verde)
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+              Liga após as 21h30 e corta 38% da energia.
+            </p>
+          </div>
+        </div>
+
+        <div
+          onClick={() => setAutomationRule('osmoticDeficitMode', !profile.automationConfig.osmoticDeficitMode)}
+          className={`cursor-pointer rounded-2xl p-4 border transition-all flex flex-col justify-between gap-3 ${
+            profile.automationConfig.osmoticDeficitMode
+              ? 'bg-amber-50/80 dark:bg-amber-950/35 border-amber-400 dark:border-amber-700 shadow-sm'
+              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <div className="w-9 h-9 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center">
+              <Sprout className="w-4 h-4" />
+            </div>
+            <ToggleSwitch
+              checked={profile.automationConfig.osmoticDeficitMode}
+              onChange={(v) => setAutomationRule('osmoticDeficitMode', v)}
+              activeColor="amber"
+              ariaLabel="Modo Economia na Seca"
+            />
+          </div>
+          <div>
+            <div className="font-bold text-sm text-slate-900 dark:text-white">
+              Modo Economia (-15%)
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+              Reduz 15% da água nos pés adultos na estiagem.
+            </p>
+          </div>
+        </div>
+
+        <div
+          onClick={() => setAutomationRule('offlineLoRaMode', !profile.automationConfig.offlineLoRaMode)}
+          className={`cursor-pointer rounded-2xl p-4 border transition-all flex flex-col justify-between gap-3 ${
+            profile.automationConfig.offlineLoRaMode
+              ? 'bg-indigo-50/80 dark:bg-indigo-950/35 border-indigo-400 dark:border-indigo-700 shadow-sm'
+              : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center">
+              <WifiOff className="w-4 h-4" />
+            </div>
+            <ToggleSwitch
+              checked={profile.automationConfig.offlineLoRaMode}
+              onChange={(v) => setAutomationRule('offlineLoRaMode', v)}
+              activeColor="indigo"
+              ariaLabel="Funcionar Sem Internet"
+            />
+          </div>
+          <div>
+            <div className="font-bold text-sm text-slate-900 dark:text-white">
+              Funcionar Sem Internet
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+              Relógio e travas seguem direto na bomba.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* New Sector Form Drawer */}
+      {showNewSectorForm && (
+        <form
+          onSubmit={handleAddSectorPartition}
+          className="bg-emerald-50 dark:bg-emerald-950/40 rounded-2xl border border-emerald-200 dark:border-emerald-800 p-5 space-y-4 text-xs"
+        >
+          <div className="flex items-center justify-between">
+            <div className="font-bold text-sm text-emerald-950 dark:text-emerald-200 flex items-center gap-2">
+              <Plus className="w-4 h-4" />
+              Criar Novo Talhão
             </div>
             <button
               type="button"
-              onClick={() => setShowNewSectorForm((v) => !v)}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm transition-all"
+              onClick={() => setShowNewSectorForm(false)}
+              className="text-slate-600 dark:text-slate-400 font-bold"
             >
-              <Plus className="w-4 h-4" />
-              <span>Novo Talhão / Dividir Hectares</span>
+              Cancelar ✕
             </button>
           </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            <label className="space-y-1 sm:col-span-2">
+              <span className="font-bold text-slate-700 dark:text-slate-300">Nome do Talhão</span>
+              <input
+                type="text"
+                placeholder={`Ex: Talhão ${String(profile.sectors.length + 1).padStart(2, '0')} — Encosta`}
+                value={newSectorName}
+                onChange={(e) => setNewSectorName(e.target.value)}
+                className="w-full border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+              />
+            </label>
+
+            <label className="space-y-1">
+              <span className="font-bold text-slate-700 dark:text-slate-300">Hectares (ha)</span>
+              <input
+                type="number"
+                step="0.5"
+                min="0.5"
+                value={newSectorHa}
+                onChange={(e) => setNewSectorHa(Math.max(0.5, Number(e.target.value)))}
+                className="w-full border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 bg-white dark:bg-slate-900 font-bold text-slate-900 dark:text-white"
+              />
+            </label>
+
+            <label className="space-y-1">
+              <span className="font-bold text-slate-700 dark:text-slate-300">Onde Fica</span>
+              <select
+                value={newSectorTerrain}
+                onChange={(e) => setNewSectorTerrain(e.target.value as 'baixada' | 'meia_encosta' | 'topo')}
+                className="w-full border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+              >
+                <option value="baixada">Baixada</option>
+                <option value="meia_encosta">Meia Encosta</option>
+                <option value="topo">Topo de Morro</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-4">
+              <label className="inline-flex items-center gap-2 font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={subtractFromLargest}
+                  onChange={(e) => setSubtractFromLargest(e.target.checked)}
+                  className="accent-emerald-600 w-4 h-4"
+                />
+                Descontar do maior talhão existente
+              </label>
+
+              <select
+                value={newSectorStage}
+                onChange={(e) => setNewSectorStage(e.target.value as PhenologicalStage)}
+                className="border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 bg-white dark:bg-slate-900 font-semibold text-slate-800 dark:text-white"
+              >
+                <option value="mudas">Mudas</option>
+                <option value="vegetativo">Vegetativo</option>
+                <option value="floracao">Floração</option>
+                <option value="frutificacao">Frutificação</option>
+              </select>
+            </div>
+
+            <button
+              type="submit"
+              className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold inline-flex items-center gap-1.5 shadow-sm"
+            >
+              <Plus className="w-4 h-4" />
+              Criar Talhão
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Clean Sector List */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+          <div>
+            <h3 className="text-base font-black text-slate-900 dark:text-white">
+              Seus Talhões de Cacau
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Escolha a fase do cacau e ligue ou pause a válvula de cada área
+            </p>
+          </div>
+          <span className="text-xs font-bold px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+            {profile.sectors.length} setores
+          </span>
         </div>
 
-        {/* Formulário Rápido "+" para Criar / Dividir Talhão */}
-        {showNewSectorForm && (
-          <form
-            onSubmit={handleAddSectorPartition}
-            className="p-5 bg-emerald-50/70 border-b border-emerald-200 space-y-4 text-xs"
-          >
-            <div className="flex items-center justify-between">
-              <div className="font-bold text-sm text-emerald-950 flex items-center gap-2">
-                <Plus className="w-4 h-4 text-emerald-700" />
-                Adicionar Nova Partição de Talhão e Dividir Hectares
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowNewSectorForm(false)}
-                className="text-slate-500 hover:text-slate-800 font-bold"
-              >
-                Cancelar ✕
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-              <label className="space-y-1 lg:col-span-2">
-                <span className="font-semibold text-slate-700">Nome do Novo Talhão</span>
-                <input
-                  type="text"
-                  placeholder={`Ex: Talhão ${String(profile.sectors.length + 1).padStart(2, '0')} — Encosta Sul`}
-                  value={newSectorName}
-                  onChange={(e) => setNewSectorName(e.target.value)}
-                  className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="font-semibold text-slate-700">Hectares (ha)</span>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="0.5"
-                  value={newSectorHa}
-                  onChange={(e) => setNewSectorHa(Math.max(0.5, Number(e.target.value)))}
-                  className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white font-bold"
-                />
-              </label>
-
-              <label className="space-y-1">
-                <span className="font-semibold text-slate-700">Posição no Relevo</span>
-                <select
-                  value={newSectorTerrain}
-                  onChange={(e) => setNewSectorTerrain(e.target.value as 'baixada' | 'meia_encosta' | 'topo')}
-                  className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white"
-                >
-                  <option value="baixada">Baixada / Várzea</option>
-                  <option value="meia_encosta">Meia Encosta</option>
-                  <option value="topo">Topo de Morro</option>
-                </select>
-              </label>
-
-              <label className="space-y-1">
-                <span className="font-semibold text-slate-700">Estágio do Cacau</span>
-                <select
-                  value={newSectorStage}
-                  onChange={(e) => setNewSectorStage(e.target.value as PhenologicalStage)}
-                  className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white"
-                >
-                  <option value="mudas">Mudas (&lt;2 anos)</option>
-                  <option value="vegetativo">Vegetativo</option>
-                  <option value="floracao">Floração</option>
-                  <option value="frutificacao">Frutificação</option>
-                </select>
-              </label>
-            </div>
-
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-              <div className="flex flex-wrap items-center gap-4">
-                <label className="inline-flex items-center gap-2 font-semibold text-slate-800 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={subtractFromLargest}
-                    onChange={(e) => setSubtractFromLargest(e.target.checked)}
-                    className="accent-emerald-600 w-4 h-4"
-                  />
-                  <span>Descontar esses hectares do maior talhão (dividir área existente)</span>
-                </label>
-
-                <label className="inline-flex items-center gap-2">
-                  <span className="font-semibold text-slate-600">Clone:</span>
-                  <input
-                    type="text"
-                    value={newSectorClone}
-                    onChange={(e) => setNewSectorClone(e.target.value)}
-                    className="border border-slate-300 rounded-lg px-2.5 py-1 bg-white w-36"
-                  />
-                </label>
-              </div>
-
-              <button
-                type="submit"
-                className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold inline-flex items-center justify-center gap-1.5 shadow-sm"
-              >
-                <Plus className="w-4 h-4" />
-                Criar Partição ({Math.round(Math.max(0.5, newSectorHa) * profile.plantingDensityPerHa).toLocaleString('pt-BR')} pés)
-              </button>
-            </div>
-          </form>
-        )}
-
-        <div className="divide-y divide-slate-200">
+        <div className="divide-y divide-slate-200 dark:divide-slate-800">
           {profile.sectors.map((sec) => {
-            const flowRatioPct = Math.round((sec.measuredFlowLh / sec.nominalFlowLh) * 100);
             const isClogged = sec.diagnosticStatus === 'clogged_alert';
             const isLeak = sec.diagnosticStatus === 'leak_alert';
+            const flowPct = Math.round((sec.measuredFlowLh / Math.max(1, sec.nominalFlowLh)) * 100);
             const sectorDailyM3 = Math.round(((sec.plantsCount * sec.targetLitersPerPlantDay) / 1000) * 10) / 10;
 
             return (
@@ -647,209 +633,199 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateP
                 key={sec.id}
                 className={`p-5 transition-colors ${
                   isLeak
-                    ? 'bg-red-50/70'
+                    ? 'bg-rose-50/70 dark:bg-rose-950/20'
                     : isClogged
-                    ? 'bg-amber-50/60'
-                    : 'hover:bg-slate-50/60'
+                    ? 'bg-amber-50/60 dark:bg-amber-950/20'
+                    : ''
                 }`}
               >
-                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-                  {/* Left: Sector info & stage selector */}
-                  <div className="space-y-2 flex-1">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  {/* Left: Info & Controls */}
+                  <div className="space-y-3 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-bold text-slate-900 text-base">{sec.name}</span>
-                      <div className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-800 font-semibold border border-slate-200 px-2 py-0.5 text-xs">
+                      <span className="font-black text-slate-900 dark:text-white text-base">
+                        {sec.name}
+                      </span>
+
+                      <span className="inline-flex items-center gap-1 text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 px-2.5 py-0.5 rounded-full">
                         <button
                           type="button"
                           onClick={() => handleResizeSectorHa(sec.id, -0.5)}
                           disabled={sec.areaHa <= 0.5}
-                          title="Reduzir 0,5 ha"
-                          className="p-0.5 rounded-full hover:bg-slate-200 disabled:opacity-30"
+                          className="p-0.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full disabled:opacity-30"
                         >
                           <Minus className="w-3 h-3" />
                         </button>
-                        <span>
-                          {sec.areaHa} ha • {sec.plantsCount.toLocaleString('pt-BR')} pés ({sec.cloneType})
-                        </span>
+                        {sec.areaHa} ha • {sec.plantsCount.toLocaleString('pt-BR')} pés
                         <button
                           type="button"
                           onClick={() => handleResizeSectorHa(sec.id, 0.5)}
-                          title="Adicionar 0,5 ha"
-                          className="p-0.5 rounded-full hover:bg-slate-200"
+                          className="p-0.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full"
                         >
                           <Plus className="w-3 h-3" />
                         </button>
-                      </div>
+                      </span>
+
                       {sec.terrainZone && (
-                        <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
                           <Mountain className="w-3 h-3" />
                           {sec.terrainZone === 'baixada'
                             ? 'Baixada'
                             : sec.terrainZone === 'topo'
-                            ? 'Topo de Morro'
+                            ? 'Topo'
                             : 'Meia Encosta'}
                         </span>
                       )}
+
+                      {sec.valveStatus === 'open' && (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-extrabold px-2.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                          Irrigando
+                        </span>
+                      )}
+                      {sec.valveStatus === 'scheduled' && (
+                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-sky-100 dark:bg-sky-900/60 text-sky-800 dark:text-sky-200">
+                          Agendado 21h30
+                        </span>
+                      )}
+                      {sec.valveStatus === 'auto_blocked' && (
+                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-rose-100 dark:bg-rose-900/60 text-rose-800 dark:text-rose-200">
+                          Trava Ativa
+                        </span>
+                      )}
+                      {sec.valveStatus === 'closed' && (
+                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                          Desligada
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2.5 text-xs">
+                      <select
+                        value={sec.stage}
+                        onChange={(e) => handleStageChange(sec.id, e.target.value as PhenologicalStage)}
+                        className="font-bold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-1.5 text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
+                      >
+                        <option value="mudas">Mudas Jovens</option>
+                        <option value="vegetativo">Folha (Vegetativo)</option>
+                        <option value="floracao">Floração e Peco</option>
+                        <option value="frutificacao">Frutificação</option>
+                      </select>
+
+                      <span className="px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 font-bold">
+                        {sec.targetLitersPerPlantDay} L/pé/dia ({sectorDailyM3} m³/dia)
+                      </span>
+
                       <button
                         type="button"
                         onClick={() => handleSplitSectorInTwo(sec)}
                         disabled={sec.areaHa < 1}
-                        title="Dividir este talhão em 2 partições iguais"
-                        className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-300 disabled:opacity-40"
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold disabled:opacity-40"
                       >
                         <Scissors className="w-3 h-3" />
                         Dividir em 2
                       </button>
+
                       {profile.sectors.length > 1 && (
                         <button
                           type="button"
                           onClick={() => handleDeleteSector(sec.id)}
-                          title="Excluir partição"
-                          className="p-1 rounded-full text-slate-400 hover:text-rose-700 hover:bg-rose-50"
+                          className="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40"
+                          title="Excluir talhão"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       )}
-                      {sec.valveStatus === 'open' && (
-                        <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
-                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                          IRRIGANDO POR PULSOS
-                        </span>
-                      )}
-                      {sec.valveStatus === 'scheduled' && (
-                        <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-300">
-                          AGENDADO (21h30 TARIFA VERDE)
-                        </span>
-                      )}
-                      {sec.valveStatus === 'auto_blocked' && (
-                        <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
-                          TRAVA AUTOMÁTICA ATIVA
-                        </span>
-                      )}
-                      {sec.valveStatus === 'closed' && (
-                        <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-slate-200 text-slate-700">
-                          VÁLVULA FECHADA
-                        </span>
-                      )}
                     </div>
 
-                    {/* Stage selector + Lâmina */}
-                    <div className="flex flex-wrap items-center gap-3 pt-1">
-                      <div className="flex items-center gap-2">
-                        <label className="text-xs font-semibold text-slate-600">Estágio da Planta:</label>
-                        <select
-                          value={sec.stage}
-                          onChange={(e) => handleStageChange(sec.id, e.target.value as PhenologicalStage)}
-                          className="text-xs font-semibold bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-slate-800 focus:ring-2 focus:ring-emerald-500 outline-none"
-                        >
-                          <option value="mudas">🌱 Mudas / Implantação</option>
-                          <option value="vegetativo">🌿 Vegetativo / Folha</option>
-                          <option value="floracao">🌸 Floração e Peco</option>
-                          <option value="frutificacao">🍫 Frutificação / Enchimento</option>
-                        </select>
-                      </div>
-
-                      <div className="text-xs bg-emerald-50 text-emerald-900 border border-emerald-200 px-3 py-1 rounded-lg font-medium">
-                        Meta: <strong>{sec.targetLitersPerPlantDay} L/árvore/dia</strong> ({sectorDailyM3} m³/dia no talhão)
-                      </div>
-
-                      <div className="text-xs text-slate-600">
-                        Umidade na Raiz (0–20cm): <strong>{sec.soilMoisturePct}% CC</strong>
-                      </div>
-                    </div>
-
-                    {/* Diagnostic Box */}
+                    {/* Alert / Health Message Bar */}
                     <div
-                      className={`mt-2 p-3 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 ${
+                      className={`p-3 rounded-xl text-xs flex flex-wrap items-center justify-between gap-2 ${
                         isLeak
-                          ? 'bg-red-100/90 border-red-300 text-red-900'
+                          ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-900 dark:text-rose-200 border border-rose-300 dark:border-rose-800'
                           : isClogged
-                          ? 'bg-amber-100/90 border-amber-300 text-amber-900'
-                          : 'bg-slate-100 border-slate-200 text-slate-700'
+                          ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-800'
+                          : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300'
                       }`}
                     >
-                      <div className="flex items-start gap-2">
+                      <span className="flex items-center gap-2 font-medium">
                         {isLeak || isClogged ? (
-                          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" />
+                          <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
                         ) : (
-                          <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
                         )}
-                        <span>{sec.diagnosticMessage}</span>
-                      </div>
+                        {sec.diagnosticMessage}
+                      </span>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        {isClogged && (
-                          <button
-                            onClick={() => handleFlushCloggedLine(sec.id)}
-                            className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white font-semibold text-xs flex items-center gap-1 shadow-sm"
-                          >
-                            <RefreshCw className="w-3.5 h-3.5" />
-                            Executar Flushing (Desentupir)
-                          </button>
-                        )}
-                        {isLeak && (
-                          <button
-                            onClick={() => handleRepairLeak(sec.id)}
-                            className="px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-800 text-white font-semibold text-xs flex items-center gap-1 shadow-sm"
-                          >
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            Confirmar Reparo da Mangueira
-                          </button>
-                        )}
-                        {!isLeak && !isClogged && (
-                          <button
-                            onClick={() => handleSimulateLeak(sec.id)}
-                            className="px-2.5 py-1 rounded-lg bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 font-medium text-xs"
-                            title="Testar como o sistema reage se uma mangueira arrebentar na roça"
-                          >
-                            Simular Mangueira Rompida
-                          </button>
-                        )}
-                      </div>
+                      {isClogged && (
+                        <button
+                          type="button"
+                          onClick={() => handleFlushCloggedLine(sec.id)}
+                          className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold inline-flex items-center gap-1.5 shadow-sm"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          Desentupir Agora
+                        </button>
+                      )}
+                      {isLeak && (
+                        <button
+                          type="button"
+                          onClick={() => handleRepairLeak(sec.id)}
+                          className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold inline-flex items-center gap-1.5 shadow-sm"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Confirmar Reparo
+                        </button>
+                      )}
+                      {!isLeak && !isClogged && (
+                        <button
+                          type="button"
+                          onClick={() => handleSimulateLeak(sec.id)}
+                          className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-rose-600 font-semibold"
+                        >
+                          Testar vazamento
+                        </button>
+                      )}
                     </div>
                   </div>
 
-                  {/* Right: Hydraulic Telemetry & Valve Action */}
-                  <div className="flex sm:flex-row lg:flex-col items-stretch sm:items-center lg:items-end justify-between gap-3 shrink-0 border-t lg:border-t-0 pt-3 lg:pt-0 border-slate-200">
-                    <div className="bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-right min-w-[210px]">
-                      <div className="flex items-center justify-between text-xs text-slate-500">
-                        <span>Vazão Lida / Nominal:</span>
-                        <span
-                          className={`font-bold ${
-                            isLeak ? 'text-red-600' : isClogged ? 'text-amber-700' : 'text-emerald-700'
-                          }`}
+                  {/* Right: Telemetry & Obvious Big Valve Button */}
+                  <div className="flex sm:flex-row lg:flex-col items-center lg:items-end justify-between gap-3 shrink-0">
+                    <div className="text-left lg:text-right text-xs">
+                      <div className="text-slate-500 dark:text-slate-400 font-semibold">
+                        Saúde da mangueira:{' '}
+                        <strong
+                          className={
+                            isLeak
+                              ? 'text-rose-600'
+                              : isClogged
+                              ? 'text-amber-600'
+                              : 'text-emerald-600 dark:text-emerald-400'
+                          }
                         >
-                          {flowRatioPct}%
-                        </span>
-                      </div>
-                      <div className="text-sm font-bold text-slate-900 mt-0.5">
-                        {(sec.measuredFlowLh / 1000).toFixed(1)} m³/h{' '}
-                        <span className="text-xs font-normal text-slate-500">
-                          / {(sec.nominalFlowLh / 1000).toFixed(1)} m³/h
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-600 mt-0.5">
-                        Pressão: <strong>{sec.pressureBar} bar</strong> (Nom: {sec.nominalPressureBar} bar)
+                          {flowPct}% vazão • {sec.pressureBar} bar
+                        </strong>
                       </div>
                     </div>
 
                     <button
+                      type="button"
                       onClick={() => toggleValve(sec)}
-                      className={`px-4 py-2 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all ${
+                      className={`px-5 py-2.5 rounded-xl font-bold text-xs inline-flex items-center gap-2 shadow-sm transition-all ${
                         sec.valveStatus === 'open'
-                          ? 'bg-slate-800 hover:bg-slate-900 text-white'
+                          ? 'bg-slate-800 dark:bg-slate-700 hover:bg-slate-900 text-white'
                           : 'bg-emerald-600 hover:bg-emerald-700 text-white'
                       }`}
                     >
                       {sec.valveStatus === 'open' ? (
                         <>
                           <Pause className="w-4 h-4" />
-                          Pausar Válvula Solenoide
+                          Pausar Rega
                         </>
                       ) : (
                         <>
                           <Play className="w-4 h-4" />
-                          Acionar Pulso de Gotejamento
+                          Ligar Rega Agora
                         </>
                       )}
                     </button>
@@ -858,48 +834,6 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateP
               </div>
             );
           })}
-        </div>
-      </div>
-
-      {/* Comparativo Técnico: Gotejamento vs. Microaspersão vs. Aspersão Convencional */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="bg-emerald-900 text-white rounded-2xl p-5 border border-emerald-700 shadow-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">Tecnologia Escolhida</span>
-            <Droplets className="w-5 h-5 text-emerald-300" />
-          </div>
-          <h4 className="text-lg font-bold mt-1">Gotejamento + Fertirrigação (Delivery System)</h4>
-          <ul className="mt-3 space-y-2 text-xs text-emerald-100">
-            <li>• <strong>Eficiência de aplicação (92–95%):</strong> Água e nutrientes direto na zona radicular (0–20 cm).</li>
-            <li>• <strong>Em Ilhéus (Cabruca):</strong> Não molha tronco nem frutos, bloqueando o microclima da Vassoura-de-Bruxa.</li>
-            <li>• <strong>No Oeste Baiano (Pleno Sol):</strong> Entrega 20 L/planta/dia no pico sem perda por vento ou evaporação (224 mm vs. 535 mm na aspersão — Jadin & Jacquemart).</li>
-          </ul>
-        </div>
-
-        <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-sky-700">Alternativa Intermediária</span>
-            <Sprout className="w-5 h-5 text-sky-600" />
-          </div>
-          <h4 className="text-lg font-bold text-slate-900 mt-1">Microaspersão Sub-Copa</h4>
-          <ul className="mt-3 space-y-2 text-xs text-slate-600">
-            <li>• <strong>Faixa molhada ampla:</strong> Útil quando se deseja acelerar a decomposição da matéria orgânica (serrapilheira) no solo.</li>
-            <li>• <strong>Atenção em Ilhéus:</strong> Eleva a umidade do ar sob a copa; exige trava rigorosa se houver foco ativo de Podridão-Parda ou Vassoura.</li>
-            <li>• <strong>Consumo hídrico:</strong> ~25% a 35% maior que o gotejamento localizado.</li>
-          </ul>
-        </div>
-
-        <div className="bg-rose-50 rounded-2xl p-5 border border-rose-200 shadow-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-rose-700">Prática de Alto Risco</span>
-            <Flame className="w-5 h-5 text-rose-600" />
-          </div>
-          <h4 className="text-lg font-bold text-rose-950 mt-1">Aspersão Sobre a Copa / "Rega no Olho"</h4>
-          <ul className="mt-3 space-y-2 text-xs text-rose-900">
-            <li>• <strong>Desperdício hídrico (+138%):</strong> Aplicou 535 mm contra 224 mm do gotejo nos experimentos clássicos na Costa do Marfim.</li>
-            <li>• <strong>Sem benefício fisiológico:</strong> Hutcheon (1981) provou que molhar por cima das árvores não reduz estresse interno frente à rega sob a copa.</li>
-            <li>• <strong>Risco fitossanitário extremo:</strong> Cria água livre nas folhas e frutos, disparando infecções fúngicas na Bahia.</li>
-          </ul>
         </div>
       </div>
     </div>

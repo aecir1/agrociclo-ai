@@ -1,82 +1,79 @@
 import React, { useState, useEffect } from 'react';
 import {
   Droplets,
-  Sprout,
-  CloudSun,
-  Scale,
-  Sliders,
-  ClipboardCheck,
   MapPin,
-  AlertTriangle,
-  CheckCircle2,
-  ThermometerSun,
-  CloudRain,
-  ArrowUpRight,
-  Compass,
-  Layers,
+  Sliders,
+  CloudSun,
   Camera,
+  Scale,
+  ClipboardCheck,
+  AlertTriangle,
+  Home,
   HelpCircle,
   UserPlus,
-  Home,
+  RotateCcw,
+  X,
+  ArrowRight,
   ChevronDown,
   ChevronUp,
-  Menu,
-  X,
-  WifiOff,
-  Landmark
+  Sun,
+  Moon,
+  Compass,
+  Sprout,
+  CloudRain,
+  ShieldAlert,
+  CheckCircle2,
+  Smartphone,
+  Monitor,
+  MoreHorizontal,
+  Bell,
+  BellOff,
 } from 'lucide-react';
-import { RegionId, PropertyProfile } from './types';
 import { INITIAL_PROFILES } from './data/mockProfiles';
-import { AutomationTab } from './components/AutomationTab';
+import { PropertyProfile, RegionId } from './types';
 import { DroughtSimulatorTab } from './components/DroughtSimulatorTab';
+import { AutomationTab } from './components/AutomationTab';
 import { RegulationCreditTab } from './components/RegulationCreditTab';
-import { PropertyAndAiTab } from './components/PropertyAndAiTab';
+import { PropertyAndEmergencyTab } from './components/PropertyAndEmergencyTab';
 import { CameraVisionTab } from './components/CameraVisionTab';
 import { FarmerSetupWizard } from './components/FarmerSetupWizard';
 import { InteractiveTutorialModal } from './components/InteractiveTutorialModal';
-import { CityWeatherForecast } from './components/CityWeatherForecast';
 import { FarmMap2D3D } from './components/FarmMap2D3D';
+import { CityWeatherForecast } from './components/CityWeatherForecast';
+import { ToggleSwitch } from './components/ToggleSwitch';
+import { AppTourOverlay, TourTabId } from './components/AppTourOverlay';
 
-type NavTab =
-  | 'overview'
-  | 'mapa'
-  | 'automation'
-  | 'simulator'
-  | 'camera_ml'
-  | 'property_ai'
-  | 'regulation';
-
-type ExtraPanelKey = 'weather' | 'agronomy' | 'technical' | null;
+type NavTab = TourTabId;
 
 const TAB_TITLES: Record<NavTab, { title: string; desc: string }> = {
   overview: {
-    title: 'Início da Fazenda',
-    desc: 'Resumo simples da água, clima e ações principais do dia'
+    title: 'Início',
+    desc: 'Resumo rápido da sua água, tempo hoje e o que fazer agora',
   },
   mapa: {
-    title: 'Mapa 2D / 3D da Fazenda',
-    desc: 'Marque os limites, ajuste o raio e meça seus hectares'
+    title: 'Mapa da Fazenda',
+    desc: 'Mapa de satélite Leaflet e vista em Relevo 3D da sua lavoura',
   },
   automation: {
-    title: 'Irrigação e Válvulas',
-    desc: 'Controle o gotejamento por talhão e evite desperdícios'
+    title: 'Controle da Irrigação',
+    desc: 'Regras de proteção e abertura dos talhões de cacau',
   },
   simulator: {
-    title: 'Seca e Água da Chuva',
-    desc: 'Veja quantos dias sua água dura e quanto captar nos telhados'
+    title: 'Seca e Chuva',
+    desc: 'Teste quantos dias a água aguenta e calcule captação nos telhados',
   },
   camera_ml: {
-    title: 'Foto da Folha (Câmera IA)',
-    desc: 'Identifique sede no cacau ou risco de Vassoura-de-Bruxa'
-  },
-  property_ai: {
-    title: 'Emergência, Cadastro e Ajuda IA',
-    desc: 'Checklist da estiagem, edição da fazenda e chat AgroAssist'
+    title: 'Saúde da Folha',
+    desc: 'Envie foto da planta para achar Vassoura-de-Bruxa ou sede',
   },
   regulation: {
-    title: 'Outorga (INEMA) e Crédito Rural',
-    desc: 'Limites legais de captação e relatório para financiamento'
-  }
+    title: 'Outorga e Crédito',
+    desc: 'Regularidade no INEMA e documento para o Banco do Nordeste',
+  },
+  emergency: {
+    title: 'Plano de Seca & Fazenda',
+    desc: 'Lista de ações na roça e edição dos dados da propriedade',
+  },
 };
 
 export function App() {
@@ -84,11 +81,47 @@ export function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('overview');
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [isTutorialOpen, setIsTutorialOpen] = useState(false);
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [openExtraPanel, setOpenExtraPanel] = useState<ExtraPanelKey>(null);
+  const [isTourOpen, setIsTourOpen] = useState(false);
+  const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
+  const [isMobilePreview, setIsMobilePreview] = useState(false);
+
+  // Botão Switch no card do clima no topo do Início (abre/fecha previsão por turnos e semana)
+  const [showHomeForecast, setShowHomeForecast] = useState(false);
+  const [showRegionCompare, setShowRegionCompare] = useState(false);
+  const [alertsEnabled, setAlertsEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('agrociclo_alerts_enabled');
+    return saved === null ? true : saved === 'true';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('agrociclo_alerts_enabled', String(alertsEnabled));
+  }, [alertsEnabled]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      window.dispatchEvent(new Event('resize'));
+    }, 120);
+    return () => window.clearTimeout(t);
+  }, [isMobilePreview]);
+
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    return localStorage.getItem('agrociclo_theme') === 'dark' ? 'dark' : 'light';
+  });
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'dark') {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+    localStorage.setItem('agrociclo_theme', theme);
+  }, [theme]);
 
   const [brandName, setBrandName] = useState<string>(() => {
-    return localStorage.getItem('agrociclo_brand_name') || 'AgroCiclo AI';
+    const stored = localStorage.getItem('agrociclo_brand_name');
+    if (!stored || stored.trim() === 'AgroCiclo AI') return 'AgroCiclo';
+    return stored;
   });
 
   const [profiles, setProfiles] = useState<Record<RegionId, PropertyProfile>>(() => {
@@ -98,7 +131,7 @@ export function App() {
         const parsed = JSON.parse(saved);
         return {
           ilheus: { ...INITIAL_PROFILES.ilheus, ...parsed.ilheus },
-          oeste: { ...INITIAL_PROFILES.oeste, ...parsed.oeste }
+          oeste: { ...INITIAL_PROFILES.oeste, ...parsed.oeste },
         };
       } catch {
         return INITIAL_PROFILES;
@@ -120,17 +153,21 @@ export function App() {
   const handleUpdateCurrentProfile = (updated: PropertyProfile) => {
     setProfiles((prev) => ({
       ...prev,
-      [activeRegion]: updated
+      [activeRegion]: updated,
     }));
   };
 
+  // Ao finalizar o cadastro da fazenda, salva tudo e dispara o Tour Guiado na tela automaticamente!
   const handleApplyNewFarmFromWizard = (region: RegionId, newProfile: PropertyProfile) => {
     setProfiles((prev) => ({
       ...prev,
-      [region]: newProfile
+      [region]: newProfile,
     }));
     setActiveRegion(region);
     setActiveTab('overview');
+    window.setTimeout(() => {
+      setIsTourOpen(true);
+    }, 280);
   };
 
   const handleResetProfiles = () => {
@@ -140,14 +177,23 @@ export function App() {
 
   const handleSelectTab = (tab: NavTab) => {
     setActiveTab(tab);
-    setIsMobileMenuOpen(false);
+    setIsMobileMoreOpen(false);
   };
 
-  // KPIs principais
-  const totalNominalM3 = currentProfile.reservoirs.reduce((acc, r) => acc + r.nominalCapacityM3, 0);
-  const totalApparentM3 = currentProfile.reservoirs.reduce((acc, r) => acc + r.currentApparentVolumeM3, 0);
-  const totalRealM3 = currentProfile.reservoirs.reduce((acc, r) => acc + r.currentRealVolumeM3, 0);
-  const siltationHiddenM3 = totalApparentM3 - totalRealM3;
+  // KPIs hídricos principais
+  const totalNominalM3 = currentProfile.reservoirs.reduce(
+    (acc, r) => acc + r.nominalCapacityM3,
+    0
+  );
+  const totalApparentM3 = currentProfile.reservoirs.reduce(
+    (acc, r) => acc + r.currentApparentVolumeM3,
+    0
+  );
+  const totalRealM3 = currentProfile.reservoirs.reduce(
+    (acc, r) => acc + r.currentRealVolumeM3,
+    0
+  );
+  const siltationHiddenM3 = Math.max(0, Math.round(totalApparentM3 - totalRealM3));
 
   const dailyDemandLiters = currentProfile.sectors.reduce(
     (acc, s) => acc + s.plantsCount * s.targetLitersPerPlantDay,
@@ -159,808 +205,1312 @@ export function App() {
   const sprinklerAutonomyDays = Math.floor(totalRealM3 / Math.max(1, sprinklerDailyM3));
   const autonomyGainDays = Math.max(0, realAutonomyDays - sprinklerAutonomyDays);
 
-  const hasHydraulicAlert = currentProfile.sectors.some((s) => s.diagnosticStatus !== 'ok');
-
-  // Dados simples para o gráfico limpo de 30 dias estilo Figma
-  const chartDays = [0, 5, 10, 15, 20, 25, 30];
-  const smartSeries = chartDays.map((d) => Math.max(0, Math.round(totalRealM3 - dailyDemandM3 * d)));
-  const sprinklerSeries = chartDays.map((d) => Math.max(0, Math.round(totalRealM3 - sprinklerDailyM3 * d)));
-  const maxChartM3 = Math.max(100, totalRealM3);
-
-  const buildSvgPoints = (series: number[], w: number, h: number, pad: number) => {
-    const usableW = w - pad * 2;
-    const usableH = h - pad * 2;
-    return series.map((val, idx) => {
-      const x = pad + (idx / (series.length - 1)) * usableW;
-      const y = h - pad - (val / maxChartM3) * usableH;
-      return { x, y };
-    });
-  };
-
-  const smartPts = buildSvgPoints(smartSeries, 520, 180, 18);
-  const sprinklerPts = buildSvgPoints(sprinklerSeries, 520, 180, 18);
-  const smartPath = smartPts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
-  const smartAreaPath = `${smartPath} L ${smartPts[smartPts.length - 1].x.toFixed(1)} 162 L ${smartPts[0].x.toFixed(1)} 162 Z`;
-  const sprinklerPath = sprinklerPts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
-
-  const primaryNavItems: Array<{ id: NavTab; label: string; icon: React.FC<{ className?: string }>; badge?: boolean }> = [
-    { id: 'overview', label: 'Início (Resumo)', icon: Home },
-    { id: 'mapa', label: 'Mapa 2D / 3D', icon: MapPin },
-    { id: 'automation', label: 'Irrigação', icon: Sliders, badge: hasHydraulicAlert },
-    { id: 'simulator', label: 'Seca e Chuva', icon: CloudSun }
-  ];
-
-  const extraNavItems: Array<{ id: NavTab; label: string; icon: React.FC<{ className?: string }> }> = [
-    { id: 'camera_ml', label: 'Foto da Folha (IA)', icon: Camera },
-    { id: 'property_ai', label: 'Emergência & Chat IA', icon: ClipboardCheck },
-    { id: 'regulation', label: 'Outorga e Crédito', icon: Scale }
-  ];
-
-  const renderSidebarContent = () => (
-    <div className="flex flex-col h-full justify-between p-4">
-      <div className="space-y-6">
-        {/* Marca */}
-        <div className="flex items-center justify-between px-2 pt-1">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-sm">
-              <Droplets className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="font-black text-base text-slate-900 leading-tight">{brandName}</div>
-              <div className="text-[11px] font-medium text-slate-500">Água e Cacau • Bahia</div>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setIsMobileMenuOpen(false)}
-            className="lg:hidden p-1.5 rounded-lg text-slate-500 hover:bg-slate-100"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Cartão da Fazenda Atual */}
-        <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-3 space-y-2.5">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            Fazenda Selecionada
-          </div>
-          <div className="text-xs font-bold text-slate-900 leading-snug truncate">
-            {currentProfile.name}
-          </div>
-          <div className="grid grid-cols-2 gap-1 bg-white p-1 rounded-xl border border-slate-200">
-            <button
-              type="button"
-              onClick={() => setActiveRegion('ilheus')}
-              className={`py-1.5 px-2 rounded-lg text-[11px] font-bold transition-all ${
-                activeRegion === 'ilheus'
-                  ? 'bg-emerald-600 text-white shadow-sm'
-                  : 'text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              🌳 Ilhéus
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveRegion('oeste')}
-              className={`py-1.5 px-2 rounded-lg text-[11px] font-bold transition-all ${
-                activeRegion === 'oeste'
-                  ? 'bg-amber-500 text-slate-950 shadow-sm'
-                  : 'text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              ☀️ Oeste
-            </button>
-          </div>
-        </div>
-
-        {/* Menu Dia a Dia */}
-        <div className="space-y-1">
-          <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            O que você mais usa
-          </div>
-          {primaryNavItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => handleSelectTab(item.id)}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${
-                  isActive
-                    ? 'bg-emerald-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                }`}
-              >
-                <span className="flex items-center gap-2.5">
-                  <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-slate-500'}`} />
-                  <span>{item.label}</span>
-                </span>
-                {item.badge && (
-                  <span className={`w-2 h-2 rounded-full ${isActive ? 'bg-amber-300' : 'bg-amber-500'}`} />
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Menu Extras */}
-        <div className="space-y-1">
-          <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            Ferramentas Extras
-          </div>
-          {extraNavItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => handleSelectTab(item.id)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all ${
-                  isActive
-                    ? 'bg-emerald-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                }`}
-              >
-                <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-slate-400'}`} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Caixa de Ajuda / Tutorial fixa no rodapé da barra */}
-      <div className="mt-6 bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5 space-y-2.5">
-        <div className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
-          <HelpCircle className="w-4 h-4 text-emerald-700" />
-          Precisa de ajuda?
-        </div>
-        <p className="text-[11px] text-emerald-900 leading-snug">
-          Veja o guia passo a passo com palavras simples para usar tudo sem dificuldade.
-        </p>
-        <button
-          type="button"
-          onClick={() => {
-            setIsTutorialOpen(true);
-            setIsMobileMenuOpen(false);
-          }}
-          className="w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm transition-all"
-        >
-          Abrir Tutorial Fácil
-        </button>
-      </div>
-    </div>
+  const tankRealPct = Math.min(
+    94,
+    Math.max(8, Math.round((totalRealM3 / Math.max(1, totalNominalM3)) * 100))
+  );
+  const tankSiltPct = Math.min(
+    28,
+    Math.max(
+      siltationHiddenM3 > 0 ? 7 : 0,
+      Math.round((siltationHiddenM3 / Math.max(1, totalNominalM3)) * 100)
+    )
   );
 
-  return (
-    <div className="min-h-screen flex bg-[#F5F7F6] text-slate-900">
-      {/* MODAIS */}
-      <InteractiveTutorialModal
-        isOpen={isTutorialOpen}
-        onClose={() => setIsTutorialOpen(false)}
-        onNavigateTab={(t) => handleSelectTab(t)}
-        onOpenWizard={() => setIsWizardOpen(true)}
-      />
+  const autonomyTone =
+    realAutonomyDays >= 25
+      ? {
+          badge: 'Reserva Tranquila',
+          badgeClass:
+            'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
+          numberClass: 'text-emerald-700 dark:text-emerald-400',
+          waterFill: '#10b981',
+        }
+      : realAutonomyDays >= 12
+        ? {
+            badge: 'Atenção Moderada',
+            badgeClass:
+              'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800',
+            numberClass: 'text-amber-600 dark:text-amber-400',
+            waterFill: '#f59e0b',
+          }
+        : {
+            badge: 'Reserva Crítica',
+            badgeClass:
+              'bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 border-rose-200 dark:border-rose-800',
+            numberClass: 'text-rose-600 dark:text-rose-400',
+            waterFill: '#ef4444',
+          };
 
-      <FarmerSetupWizard
-        isOpen={isWizardOpen}
-        onClose={() => setIsWizardOpen(false)}
-        onApplyNewFarm={handleApplyNewFarmFromWizard}
-      />
+  const hasHydraulicAlert = currentProfile.sectors.some((s) => s.diagnosticStatus !== 'ok');
+  const fungalRiskHigh = currentProfile.weather.airHumidityPct >= 82;
+  const rain40mmLiters = Math.round(
+    currentProfile.roofCatchmentAreaM2 * 40 * currentProfile.catchmentEfficiency
+  );
 
-      {/* SIDEBAR DESKTOP (ESTILO FIGMA) */}
-      <aside className="hidden lg:block w-64 shrink-0 bg-white border-r border-slate-200/80 sticky top-0 h-screen overflow-y-auto">
-        {renderSidebarContent()}
-      </aside>
+  // Problemas urgentes detectados automaticamente para destaque colorido na Tela Inicial
+  const urgentAlerts: Array<{
+    id: string;
+    severity: 'critical' | 'warning';
+    title: string;
+    detail: string;
+    actionLabel: string;
+    targetTab: NavTab;
+  }> = [];
 
-      {/* DRAWER MOBILE */}
-      {isMobileMenuOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden flex">
-          <div className="fixed inset-0 bg-slate-950/40" onClick={() => setIsMobileMenuOpen(false)} />
-          <aside className="relative w-72 max-w-[85vw] bg-white h-full shadow-2xl z-10 overflow-y-auto">
-            {renderSidebarContent()}
-          </aside>
-        </div>
+  const leakSector = currentProfile.sectors.find((s) => s.diagnosticStatus === 'leak_alert');
+  const cloggedSector = currentProfile.sectors.find((s) => s.diagnosticStatus === 'clogged_alert');
+
+  if (leakSector) {
+    urgentAlerts.push({
+      id: 'leak',
+      severity: 'critical',
+      title: `Vazamento detectado no ${leakSector.name}`,
+      detail: 'Pressão caiu na rede. Bomba travada para evitar perda de água.',
+      actionLabel: 'Ver Mangueira',
+      targetTab: 'automation',
+    });
+  }
+
+  if (realAutonomyDays < 12) {
+    urgentAlerts.push({
+      id: 'water-low',
+      severity: 'critical',
+      title: `Água crítica: reserva dura apenas ${realAutonomyDays} dias`,
+      detail: 'Ative economia de emergência e aproveite captação de telhados.',
+      actionLabel: 'Simular Seca',
+      targetTab: 'simulator',
+    });
+  }
+
+  if (cloggedSector) {
+    urgentAlerts.push({
+      id: 'clog',
+      severity: 'warning',
+      title: `Gotejador entupido no ${cloggedSector.name}`,
+      detail: `Pressão subiu para ${cloggedSector.pressureBar} bar. Vale abrir o final da linha hoje.`,
+      actionLabel: 'Desentupir',
+      targetTab: 'automation',
+    });
+  }
+
+  if (currentProfile.weather.airHumidityPct >= 85) {
+    urgentAlerts.push({
+      id: 'fungal',
+      severity: 'critical',
+      title: `Risco alto de Vassoura-de-Bruxa (${currentProfile.weather.airHumidityPct}% umidade)`,
+      detail: 'Evite molhar folhas: mantenha a Trava Anti-Vassoura ligada e inspecione ramos.',
+      actionLabel: 'Checar Folha',
+      targetTab: 'camera_ml',
+    });
+  }
+
+  const withdrawalPct = Math.round(
+    (currentProfile.regulation.currentWithdrawalM3Day /
+      Math.max(1, currentProfile.regulation.authorizedFlowM3Day)) *
+      100
+  );
+  if (withdrawalPct >= 90) {
+    urgentAlerts.push({
+      id: 'outorga',
+      severity: 'warning',
+      title: `Captação em ${withdrawalPct}% do limite da Outorga`,
+      detail: 'Aproxime-se com cuidado do teto diário permitido pelo INEMA.',
+      actionLabel: 'Ver Outorga',
+      targetTab: 'regulation',
+    });
+  }
+
+  const topUrgentAlert = urgentAlerts[0] || null;
+  const hasCriticalAlert = urgentAlerts.some((a) => a.severity === 'critical');
+
+  const primaryNavItems: Array<{
+    id: NavTab;
+    label: string;
+    icon: React.FC<{ className?: string }>;
+    badge?: boolean;
+  }> = [
+    { id: 'overview', label: 'Início', icon: Home },
+    { id: 'mapa', label: 'Mapa da Fazenda', icon: MapPin },
+    { id: 'automation', label: 'Irrigação', icon: Sliders, badge: hasHydraulicAlert },
+    { id: 'simulator', label: 'Seca e Chuva', icon: CloudSun },
+  ];
+
+  const secondaryNavItems: Array<{
+    id: NavTab;
+    label: string;
+    icon: React.FC<{ className?: string }>;
+  }> = [
+    { id: 'camera_ml', label: 'Saúde da Folha', icon: Camera },
+    { id: 'regulation', label: 'Outorga e Crédito', icon: Scale },
+    { id: 'emergency', label: 'Seca & Fazenda', icon: ClipboardCheck },
+  ];
+
+  const ilheusCompare = profiles.ilheus;
+  const oesteCompare = profiles.oeste;
+  const isMoreTabActive = ['simulator', 'regulation', 'emergency'].includes(activeTab);
+
+  const shellContent = (
+    <div
+      className={
+        isMobilePreview
+          ? 'w-[404px] max-w-full h-[800px] max-h-[84vh] rounded-[2.25rem] border-[6px] border-slate-800 dark:border-slate-700 shadow-2xl overflow-hidden flex flex-col relative transform-gpu mobile-force bg-[#EDF3EE] dark:bg-[#0B1120] text-slate-900 dark:text-slate-100'
+          : 'min-h-screen bg-[#EDF3EE] dark:bg-[#0B1120] text-slate-900 dark:text-slate-100 flex flex-col lg:flex-row transition-colors duration-200'
+      }
+    >
+      {/* BARRA LATERAL ESQUERDA (APENAS DESKTOP) */}
+      {!isMobilePreview && (
+        <aside className="hidden lg:flex w-64 bg-white dark:bg-[#111827] border-r border-slate-200/80 dark:border-slate-800 flex-col justify-between shrink-0">
+          <div className="p-4 space-y-5 overflow-y-auto">
+            {/* Logo */}
+            <div className="flex items-center justify-between px-1 pt-1">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-sm">
+                  <Droplets className="w-5 h-5" />
+                </div>
+                <div>
+                  <h1 className="font-extrabold text-base tracking-tight text-slate-900 dark:text-white leading-tight">
+                    {brandName}
+                  </h1>
+                  <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
+                    Cacau & Água na Bahia
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Seletor de Região */}
+            <div
+              data-tour="sidebar-region"
+              className="bg-slate-50 dark:bg-slate-800/70 p-2.5 rounded-2xl border border-slate-200/80 dark:border-slate-700 space-y-2"
+            >
+              <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400 px-1 flex items-center justify-between">
+                <span>Sua Região</span>
+                <span className="text-emerald-700 dark:text-emerald-400 truncate max-w-[110px]">
+                  {currentProfile.municipality}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setActiveRegion('ilheus')}
+                  className={`py-2 px-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    activeRegion === 'ilheus'
+                      ? 'bg-emerald-600 text-white shadow-sm'
+                      : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  Ilhéus (Sul)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveRegion('oeste')}
+                  className={`py-2 px-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    activeRegion === 'oeste'
+                      ? 'bg-amber-500 text-white shadow-sm'
+                      : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  Oeste Baiano
+                </button>
+              </div>
+            </div>
+
+            {/* Menu Principal */}
+            <div className="space-y-1">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-2 pb-1">
+                Principal
+              </div>
+              {primaryNavItems.map((item) => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleSelectTab(item.id)}
+                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
+                      isActive
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'text-slate-700 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-slate-800 hover:text-emerald-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <Icon
+                        className={`w-4 h-4 ${
+                          isActive ? 'text-white' : 'text-slate-500 dark:text-slate-400'
+                        }`}
+                      />
+                      <span>{item.label}</span>
+                    </span>
+                    {item.badge && (
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-white dark:ring-slate-900" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Menu Ferramentas */}
+            <div className="space-y-1">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-2 pb-1">
+                Saúde & Crédito
+              </div>
+              {secondaryNavItems.map((item) => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleSelectTab(item.id)}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
+                      isActive
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'text-slate-700 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-slate-800 hover:text-emerald-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <Icon
+                      className={`w-4 h-4 ${
+                        isActive ? 'text-white' : 'text-slate-500 dark:text-slate-400'
+                      }`}
+                    />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Rodapé da Sidebar */}
+          <div className="p-4 border-t border-slate-200/80 dark:border-slate-800 space-y-2">
+            <button
+              type="button"
+              onClick={() => setIsTourOpen(true)}
+              className="w-full py-2.5 px-3 rounded-xl bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 dark:hover:bg-amber-900/60 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Compass className="w-4 h-4" />
+              Tour Guiado na Tela
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsTutorialOpen(true)}
+              className="w-full py-2.5 px-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <HelpCircle className="w-4 h-4" />
+              Tutorial & Dicionário
+            </button>
+
+            <button
+              type="button"
+              onClick={handleResetProfiles}
+              className="w-full py-2 px-3 rounded-xl text-xs font-semibold text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              Restaurar Padrão
+            </button>
+          </div>
+        </aside>
       )}
 
-      {/* ÁREA PRINCIPAL */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* TOPBAR BRANCA LIMPA */}
-        <header className="bg-white/95 backdrop-blur-sm border-b border-slate-200/80 sticky top-0 z-30">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <button
-                type="button"
-                onClick={() => setIsMobileMenuOpen(true)}
-                className="lg:hidden p-2 rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-100"
-                aria-label="Abrir menu"
+      {/* ÁREA DE CONTEÚDO */}
+      <div
+        className={`flex-1 flex flex-col min-w-0 ${
+          isMobilePreview ? 'min-h-0 overflow-y-auto overflow-x-hidden' : ''
+        }`}
+      >
+        {/* Topbar Limpa */}
+        <header
+          className={`sticky top-0 z-30 bg-white/95 dark:bg-[#111827]/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800 ${
+            isMobilePreview ? 'px-3.5 py-2.5' : 'px-4 sm:px-6 lg:px-8 py-3 lg:py-3.5'
+          }`}
+        >
+          <div className="max-w-7xl mx-auto flex items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div
+                className={`${
+                  isMobilePreview ? 'flex' : 'flex lg:hidden'
+                } w-9 h-9 rounded-xl bg-emerald-600 text-white items-center justify-center shadow-sm shrink-0`}
               >
-                <Menu className="w-5 h-5" />
-              </button>
+                <Droplets className="w-4 h-4" />
+              </div>
               <div className="min-w-0">
-                <h1 className="text-base sm:text-lg font-black text-slate-900 truncate">
+                <h2
+                  className={`${
+                    isMobilePreview ? 'text-base' : 'text-base sm:text-xl'
+                  } font-extrabold text-slate-900 dark:text-white leading-tight truncate`}
+                >
                   {TAB_TITLES[activeTab].title}
-                </h1>
-                <p className="text-xs text-slate-500 truncate">
-                  {currentProfile.name} • {currentProfile.municipality}/{currentProfile.state}
+                </h2>
+                <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 truncate">
+                  {currentProfile.name} • {currentProfile.municipality}/{currentProfile.state} •{' '}
+                  <strong>{currentProfile.cacaoAreaHa} ha</strong>
                 </p>
               </div>
             </div>
 
-            {/* BOTÕES PRINCIPAIS SEMPRE BEM VISÍVEIS */}
-            <div className="flex flex-wrap items-center gap-2">
-              {activeTab !== 'mapa' && (
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              {/* Botão Modo Celular (apenas Desktop quando fora da prévia) */}
+              {!isMobilePreview && (
                 <button
                   type="button"
-                  onClick={() => handleSelectTab('mapa')}
-                  className="px-3.5 py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-200 text-xs font-bold inline-flex items-center gap-1.5 transition-all"
+                  onClick={() => {
+                    setIsMobileMoreOpen(false);
+                    setIsMobilePreview(true);
+                  }}
+                  aria-label="Visualizar em Modo Celular"
+                  className="hidden lg:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs cursor-pointer"
                 >
-                  <MapPin className="w-4 h-4 text-sky-600" />
-                  <span>Abrir Mapa 2D/3D</span>
+                  <Smartphone className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <span>Modo Celular</span>
                 </button>
               )}
+
+              {/* Toggle Dark / Light Mode */}
               <button
                 type="button"
-                onClick={() => setIsTutorialOpen(true)}
-                className="px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 text-xs font-bold inline-flex items-center gap-1.5 transition-all"
+                onClick={() => setTheme((prev) => (prev === 'light' ? 'dark' : 'light'))}
+                aria-label="Alternar tema claro e escuro"
+                className={`${
+                  isMobilePreview ? 'p-2' : 'px-2.5 sm:px-3 py-2'
+                } rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer`}
               >
-                <HelpCircle className="w-4 h-4 text-emerald-600" />
-                <span>Como Usar (Tutorial)</span>
+                {theme === 'light' ? (
+                  <>
+                    <Moon className="w-4 h-4 text-slate-600" />
+                    {!isMobilePreview && <span className="hidden lg:inline">Modo Escuro</span>}
+                  </>
+                ) : (
+                  <>
+                    <Sun className="w-4 h-4 text-amber-400" />
+                    {!isMobilePreview && <span className="hidden lg:inline">Modo Claro</span>}
+                  </>
+                )}
               </button>
+
+              {!isMobilePreview && (
+                <button
+                  type="button"
+                  onClick={() => setIsTutorialOpen(true)}
+                  className="hidden lg:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200 font-bold text-xs cursor-pointer"
+                >
+                  <HelpCircle className="w-4 h-4" />
+                  Como Usar
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={() => setIsWizardOpen(true)}
-                className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-black inline-flex items-center gap-1.5 shadow-sm transition-all"
+                className={`${
+                  isMobilePreview ? 'px-2.5 py-2 text-[11px]' : 'px-3 sm:px-3.5 py-2 text-xs'
+                } rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-extrabold inline-flex items-center gap-1 shadow-sm cursor-pointer`}
               >
-                <UserPlus className="w-4 h-4" />
-                <span>+ Cadastrar Fazenda</span>
+                <UserPlus className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                {isMobilePreview ? (
+                  <span>+ Fazenda</span>
+                ) : (
+                  <>
+                    <span className="sm:hidden">+ Fazenda</span>
+                    <span className="hidden sm:inline">+ Cadastrar Fazenda</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
+
+          {/* Barra Rápida de Região no Celular (troca Ilhéus <-> Oeste com 1 toque sem abrir menu) */}
+          <div
+            data-tour="sidebar-region"
+            className={`${
+              isMobilePreview ? 'flex' : 'flex lg:hidden'
+            } items-center justify-between gap-2 pt-2.5 mt-2.5 border-t border-slate-100 dark:border-slate-800`}
+          >
+            <div className="grid grid-cols-2 gap-1.5 flex-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setActiveRegion('ilheus')}
+                className={`py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeRegion === 'ilheus'
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                Ilhéus (Sul)
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveRegion('oeste')}
+                className={`py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  activeRegion === 'oeste'
+                    ? 'bg-amber-500 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                Oeste Baiano
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsTourOpen(true)}
+              aria-label="Iniciar tour na tela"
+              className="px-2.5 py-2 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 text-xs font-bold inline-flex items-center gap-1 shrink-0 cursor-pointer"
+            >
+              <Compass className="w-3.5 h-3.5" />
+              <span>Tour</span>
+            </button>
+          </div>
         </header>
 
-        {/* CONTEÚDO DA PÁGINA ATIVA */}
-        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
-          {activeTab === 'overview' && (
-            <div className="space-y-6">
-              {/* 1. BOTÕES GRANDES E BEM VISÍVEIS (O QUE ELE MAIS USA) */}
-              <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-5 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-bold text-slate-800">
-                    Ações Rápidas — O que você quer fazer agora?
-                  </h2>
-                  <span className="text-[11px] font-medium text-slate-400 hidden sm:inline">
-                    Toque em um botão grande abaixo
-                  </span>
+        {/* CONTEÚDO PRINCIPAL */}
+        <main
+          className={`flex-1 ${
+            isMobilePreview ? 'px-3.5 py-4 pb-24' : 'px-3.5 sm:px-6 lg:px-8 py-4 sm:py-6 pb-24 lg:pb-8'
+          }`}
+        >
+          <div className="max-w-7xl mx-auto">
+            {activeTab === 'overview' && (
+              <div className="space-y-5 sm:space-y-6">
+                {/* ALERTA DE PROBLEMA NO TOPO DA TELA INICIAL (EQUILIBRADO + OPÇÃO DE DESLIGAR) */}
+                {topUrgentAlert && !alertsEnabled && (
+                  <div className="flex items-center justify-between gap-3 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/70 text-xs">
+                    <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                      <BellOff className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <span>
+                        Alertas na tela inicial desligados ({urgentAlerts.length}{' '}
+                        {urgentAlerts.length === 1 ? 'aviso' : 'avisos'})
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAlertsEnabled(true)}
+                      className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold inline-flex items-center gap-1 cursor-pointer transition shrink-0"
+                    >
+                      <Bell className="w-3 h-3" />
+                      <span>Ligar alertas</span>
+                    </button>
+                  </div>
+                )}
+
+                {topUrgentAlert && alertsEnabled && (
+                  <div
+                    role="alert"
+                    className={`rounded-2xl p-3.5 sm:p-4 border border-l-4 shadow-sm flex flex-col gap-2.5 ${
+                      hasCriticalAlert
+                        ? 'bg-rose-50/90 dark:bg-rose-950/35 border-rose-200 dark:border-rose-800/70 border-l-rose-600 text-rose-950 dark:text-rose-100'
+                        : 'bg-amber-50/90 dark:bg-amber-950/35 border-amber-200 dark:border-amber-800/70 border-l-amber-500 text-amber-950 dark:text-amber-100'
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-3 min-w-0">
+                        <div
+                          className={`p-2 rounded-xl text-white shrink-0 ${
+                            hasCriticalAlert ? 'bg-rose-600' : 'bg-amber-500'
+                          }`}
+                        >
+                          <AlertTriangle className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                            <span
+                              className={`text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full text-white ${
+                                hasCriticalAlert ? 'bg-rose-600' : 'bg-amber-600'
+                              }`}
+                            >
+                              {hasCriticalAlert ? 'Urgente' : 'Atenção'}
+                            </span>
+                            <h3 className="text-sm sm:text-base font-extrabold leading-snug">
+                              {topUrgentAlert.title}
+                            </h3>
+                          </div>
+                          <p
+                            className={`text-xs font-medium ${
+                              hasCriticalAlert
+                                ? 'text-rose-800/90 dark:text-rose-200/80'
+                                : 'text-amber-800/90 dark:text-amber-200/80'
+                            }`}
+                          >
+                            {topUrgentAlert.detail}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                        <button
+                          type="button"
+                          onClick={() => handleSelectTab(topUrgentAlert.targetTab)}
+                          className={`px-3.5 py-2 rounded-xl text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-sm cursor-pointer transition ${
+                            hasCriticalAlert
+                              ? 'bg-rose-600 hover:bg-rose-700'
+                              : 'bg-amber-600 hover:bg-amber-700'
+                          }`}
+                        >
+                          <span>{topUrgentAlert.actionLabel}</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setAlertsEnabled(false)}
+                          title="Desligar alertas na tela inicial"
+                          className={`px-2.5 py-2 rounded-xl border text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition ${
+                            hasCriticalAlert
+                              ? 'border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-200 hover:bg-rose-100/80 dark:hover:bg-rose-900/40'
+                              : 'border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-200 hover:bg-amber-100/80 dark:hover:bg-amber-900/40'
+                          }`}
+                        >
+                          <BellOff className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Desligar</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {urgentAlerts.length > 1 && (
+                      <div
+                        className={`pt-2 border-t flex flex-wrap items-center gap-1.5 ${
+                          hasCriticalAlert
+                            ? 'border-rose-200/80 dark:border-rose-800/50'
+                            : 'border-amber-200/80 dark:border-amber-800/50'
+                        }`}
+                      >
+                        <span className="text-[11px] font-bold opacity-80">
+                          Outros ({urgentAlerts.length - 1}):
+                        </span>
+                        {urgentAlerts.slice(1).map((extra) => (
+                          <button
+                            key={extra.id}
+                            type="button"
+                            onClick={() => handleSelectTab(extra.targetTab)}
+                            className={`px-2 py-0.5 rounded-lg text-[11px] font-semibold inline-flex items-center gap-1.5 cursor-pointer transition border ${
+                              extra.severity === 'critical'
+                                ? 'bg-rose-100/80 dark:bg-rose-900/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 hover:bg-rose-200/70'
+                                : 'bg-amber-100/80 dark:bg-amber-900/40 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 hover:bg-amber-200/70'
+                            }`}
+                          >
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full ${
+                                extra.severity === 'critical' ? 'bg-rose-600' : 'bg-amber-500'
+                              }`}
+                            />
+                            <span>{extra.title}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* LINHA 1 HERO: CAIXA D'ÁGUA VISUAL (7 COLS) + CARTÃO CLIMA COM SWITCH DE PREVISÃO (5 COLS) */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+                  {/* Esquerda (7 cols): Tanque de Água + Duração Direta */}
+                  <div
+                    data-tour="home-water-tank"
+                    className="lg:col-span-7 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-5 sm:p-6 shadow-sm flex flex-col justify-between gap-5"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        Sua Reserva de Água Hoje
+                      </span>
+                      <span
+                        className={`px-3 py-1 rounded-full text-xs font-extrabold border ${autonomyTone.badgeClass}`}
+                      >
+                        {autonomyTone.badge}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-5 items-center">
+                      {/* Tanque Visual (4 cols) */}
+                      <div className="sm:col-span-4 flex flex-col items-center">
+                        <div className="relative w-32 h-40 rounded-2xl border-4 border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800 overflow-hidden shadow-inner flex flex-col justify-end">
+                          {/* Água Real Útil */}
+                          <div
+                            className="w-full transition-all duration-700 relative"
+                            style={{
+                              height: `${Math.max(12, tankRealPct)}%`,
+                              backgroundColor: autonomyTone.waterFill,
+                              opacity: 0.88,
+                            }}
+                          >
+                            <div className="w-full h-1.5 bg-white/35" />
+                          </div>
+                          {/* Lodo / Assoreamento no fundo */}
+                          {tankSiltPct > 0 && (
+                            <div
+                              className="w-full bg-amber-900/75 dark:bg-amber-950 flex items-center justify-center text-[9px] font-bold text-amber-100 border-t border-amber-700/60"
+                              style={{ height: `${tankSiltPct}%` }}
+                            >
+                              Lodo (-{siltationHiddenM3} m³)
+                            </div>
+                          )}
+
+                          {/* Porcentagem Centralizada */}
+                          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                            <span className="px-2.5 py-1 rounded-xl bg-slate-950/55 backdrop-blur-xs text-white text-lg font-black shadow">
+                              {Math.round((totalRealM3 / Math.max(1, totalNominalM3)) * 100)}%
+                            </span>
+                            <span className="text-[11px] font-extrabold text-slate-800 dark:text-white mt-1 bg-white/85 dark:bg-slate-900/80 px-2 py-0.5 rounded-full">
+                              {Math.round(totalRealM3)} m³ úteis
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Headline de Dopamina + Comparação Simples (8 cols) */}
+                      <div className="sm:col-span-8 space-y-4">
+                        <div>
+                          <div
+                            className={`text-3xl sm:text-4xl font-black tracking-tight leading-none ${autonomyTone.numberClass}`}
+                          >
+                            Sua água dura {realAutonomyDays} dias
+                          </div>
+                          <p className="text-sm font-semibold text-slate-600 dark:text-slate-300 mt-1.5">
+                            No gotejamento você ganha{' '}
+                            <strong className="text-emerald-700 dark:text-emerald-400">
+                              +{autonomyGainDays} dias extras
+                            </strong>{' '}
+                            em comparação à irrigação comum.
+                          </p>
+                        </div>
+
+                        {/* Barrinhas Comparativas Limpas */}
+                        <div className="space-y-2.5 bg-slate-50 dark:bg-slate-800/70 p-3.5 rounded-xl border border-slate-200/80 dark:border-slate-700">
+                          <div>
+                            <div className="flex justify-between items-center gap-2 text-xs font-bold mb-1">
+                              <span className="text-emerald-700 dark:text-emerald-400">
+                                Com Gotejamento na Raiz ({dailyDemandM3} m³/dia)
+                              </span>
+                              <span className="text-slate-900 dark:text-white font-black shrink-0 whitespace-nowrap">
+                                {realAutonomyDays} dias
+                              </span>
+                            </div>
+                            <div className="w-full h-2.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-emerald-600 rounded-full transition-all duration-500"
+                                style={{
+                                  width: `${Math.min(
+                                    100,
+                                    (realAutonomyDays / Math.max(30, realAutonomyDays)) * 100
+                                  )}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="flex justify-between items-center gap-2 text-xs font-semibold mb-1 text-slate-500 dark:text-slate-400">
+                              <span>Com Rega Comum / Aspersão ({sprinklerDailyM3} m³/dia)</span>
+                              <span className="shrink-0 whitespace-nowrap">{sprinklerAutonomyDays} dias</span>
+                            </div>
+                            <div className="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-slate-400 dark:bg-slate-500 rounded-full transition-all duration-500"
+                                style={{
+                                  width: `${Math.min(
+                                    100,
+                                    (sprinklerAutonomyDays / Math.max(30, realAutonomyDays)) * 100
+                                  )}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Métricas Rápidas + Botão de Ação */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-3 text-xs text-slate-600 dark:text-slate-400">
+                            <span className="inline-flex items-center gap-1 font-bold text-slate-800 dark:text-slate-200">
+                              <Sprout className="w-4 h-4 text-emerald-600" />
+                              {currentProfile.estimatedPlants.toLocaleString('pt-BR')} pés
+                            </span>
+                            <span>•</span>
+                            <span>{currentProfile.cacaoAreaHa} ha</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleSelectTab('simulator')}
+                            className="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-sm cursor-pointer"
+                          >
+                            Testar Cenário de Seca
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Direita (5 cols): Cartão Verde Clima Agora + Switch Direto no Topo */}
+                  <div
+                    data-tour="home-weather-switch"
+                    className="lg:col-span-5 rounded-2xl bg-gradient-to-br from-emerald-700 via-emerald-800 to-teal-900 dark:from-emerald-900 dark:via-emerald-950 dark:to-slate-950 text-white p-5 sm:p-6 shadow-md border border-emerald-600/40 flex flex-col justify-between gap-5"
+                  >
+                    <div className="space-y-4">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <span className="text-xs font-bold uppercase tracking-wider text-emerald-200">
+                            Tempo Agora em {currentProfile.municipality}
+                          </span>
+                          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mt-1">
+                            <span className="text-4xl sm:text-5xl font-black">
+                              {currentProfile.weather.tempC}°C
+                            </span>
+                            <span className="text-sm font-semibold text-emerald-100 whitespace-nowrap">
+                              • {currentProfile.weather.airHumidityPct}% umidade
+                            </span>
+                          </div>
+                        </div>
+                        <div className="p-3 rounded-2xl bg-white/15">
+                          <CloudSun className="w-7 h-7 text-amber-300" />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2.5 text-xs">
+                        <div className="bg-white/10 rounded-xl p-3">
+                          <span className="text-emerald-200 block">Dias sem chuva</span>
+                          <span className="font-black text-base text-white">
+                            {currentProfile.weather.daysWithoutRain} dias
+                          </span>
+                        </div>
+                        <div className="bg-white/10 rounded-xl p-3">
+                          <span className="text-emerald-200 block">Chuva em 7 dias</span>
+                          <span className="font-black text-base text-white">
+                            {currentProfile.weather.forecastRain7DaysMm} mm
+                          </span>
+                        </div>
+                      </div>
+
+                      {fungalRiskHigh ? (
+                        <div className="p-3 rounded-xl bg-rose-500/25 border border-rose-300/40 text-xs font-bold flex items-center gap-2 text-rose-50">
+                          <ShieldAlert className="w-4 h-4 shrink-0 text-rose-200" />
+                          <span>Ar muito úmido: cuidado com Vassoura-de-Bruxa! Trava ativa.</span>
+                        </div>
+                      ) : (
+                        <div className="p-3 rounded-xl bg-emerald-500/25 border border-emerald-300/40 text-xs font-bold flex items-center gap-2 text-emerald-50">
+                          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-200" />
+                          <span>Tempo favorável na copa • Irrigação protegida na raiz.</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Botão Switch na cara do usuário para abrir previsão sem precisar rolar */}
+                    <div className="bg-black/25 rounded-xl p-3.5 border border-white/15 flex items-center justify-between gap-3">
+                      <div>
+                        <span className="text-xs font-extrabold text-white block">
+                          Ver Previsão do Tempo
+                        </span>
+                        <span className="text-[11px] text-emerald-200">
+                          Turnos de 3h + Previsão da Semana
+                        </span>
+                      </div>
+                      <ToggleSwitch
+                        checked={showHomeForecast}
+                        onChange={setShowHomeForecast}
+                        ariaLabel="Abrir previsão do tempo na tela inicial"
+                        size="md"
+                        activeColor="amber"
+                      />
+                    </div>
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => handleSelectTab('mapa')}
-                    className="group text-left p-4 rounded-2xl border border-sky-200 bg-sky-50/70 hover:bg-sky-600 hover:border-sky-600 transition-all flex items-center gap-3.5"
-                  >
-                    <div className="w-11 h-11 rounded-xl bg-sky-600 group-hover:bg-white text-white group-hover:text-sky-700 flex items-center justify-center shrink-0 transition-colors">
-                      <MapPin className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="font-black text-sm text-slate-900 group-hover:text-white">
+                {/* EXPANSÃO IMEDIATA DA PREVISÃO QUANDO O SWITCH ESTÁ LIGADO */}
+                {showHomeForecast && <CityWeatherForecast profile={currentProfile} />}
+
+                {/* LINHA 2: AÇÕES RÁPIDAS GRANDES */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-extrabold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                      O que você quer acessar agora?
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+                    <button
+                      type="button"
+                      onClick={() => handleSelectTab('mapa')}
+                      className="text-left p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:border-sky-400 dark:hover:border-sky-600 shadow-sm transition group cursor-pointer"
+                    >
+                      <div className="w-10 h-10 rounded-xl bg-sky-100 dark:bg-sky-950 text-sky-600 dark:text-sky-400 flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
+                        <MapPin className="w-5 h-5" />
+                      </div>
+                      <div className="font-extrabold text-sm text-slate-900 dark:text-white">
                         Mapa da Fazenda
                       </div>
-                      <div className="text-xs text-slate-600 group-hover:text-sky-100">
-                        Ver em 2D/3D, GPS e raio
-                      </div>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleSelectTab('automation')}
-                    className="group text-left p-4 rounded-2xl border border-emerald-200 bg-emerald-50/70 hover:bg-emerald-600 hover:border-emerald-600 transition-all flex items-center gap-3.5"
-                  >
-                    <div className="w-11 h-11 rounded-xl bg-emerald-600 group-hover:bg-white text-white group-hover:text-emerald-700 flex items-center justify-center shrink-0 transition-colors">
-                      <Sliders className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="font-black text-sm text-slate-900 group-hover:text-white">
-                        Controlar Rega
-                      </div>
-                      <div className="text-xs text-slate-600 group-hover:text-emerald-100">
-                        Abrir/pausar gotejamento
-                      </div>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleSelectTab('simulator')}
-                    className="group text-left p-4 rounded-2xl border border-amber-200 bg-amber-50/70 hover:bg-amber-500 hover:border-amber-500 transition-all flex items-center gap-3.5"
-                  >
-                    <div className="w-11 h-11 rounded-xl bg-amber-500 group-hover:bg-white text-slate-950 flex items-center justify-center shrink-0 transition-colors">
-                      <CloudSun className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="font-black text-sm text-slate-900 group-hover:text-slate-950">
-                        Testar Seca / Chuva
-                      </div>
-                      <div className="text-xs text-slate-600 group-hover:text-slate-900">
-                        Ver quantos dias a água dura
-                      </div>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setIsTutorialOpen(true)}
-                    className="group text-left p-4 rounded-2xl border border-slate-200 bg-slate-50 hover:bg-slate-800 hover:border-slate-800 transition-all flex items-center gap-3.5"
-                  >
-                    <div className="w-11 h-11 rounded-xl bg-slate-800 group-hover:bg-white text-white group-hover:text-slate-900 flex items-center justify-center shrink-0 transition-colors">
-                      <HelpCircle className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="font-black text-sm text-slate-900 group-hover:text-white">
-                        Como Usar (Guia)
-                      </div>
-                      <div className="text-xs text-slate-600 group-hover:text-slate-200">
-                        Tutorial fácil passo a passo
-                      </div>
-                    </div>
-                  </button>
-                </div>
-              </div>
-
-              {/* 2. TRÊS CARTÕES LIMPOS ESTILO FIGMA (SEM POLUIÇÃO VISUAL) */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                {/* Card 1: Água Guardada */}
-                <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex flex-col justify-between space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                      Água Guardada (Real)
-                    </span>
-                    <div className="w-8 h-8 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center">
-                      <Droplets className="w-4 h-4" />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-3xl font-black text-slate-900">
-                      {totalRealM3.toLocaleString('pt-BR')} m³
-                    </div>
-                    <p className="text-xs text-slate-600 mt-1">
-                      Suporta cerca de <strong className="text-emerald-700">{realAutonomyDays} dias</strong> de rega no gotejo.
-                    </p>
-                  </div>
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
-                    <span className="px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 font-semibold">
-                      -{siltationHiddenM3} m³ de lodo descontados
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => handleSelectTab('simulator')}
-                      className="font-bold text-emerald-700 hover:underline inline-flex items-center gap-0.5"
-                    >
-                      Detalhes <ArrowUpRight className="w-3.5 h-3.5" />
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        Satélite Leaflet e Relevo 3D
+                      </p>
                     </button>
-                  </div>
-                </div>
 
-                {/* Card 2: Clima Hoje */}
-                <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex flex-col justify-between space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                      Tempo e Risco Hoje
-                    </span>
-                    <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-                      <ThermometerSun className="w-4 h-4" />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-3xl font-black text-slate-900">
-                      {currentProfile.weather.tempC} °C
-                      <span className="text-sm font-semibold text-slate-500 ml-2">
-                        • {currentProfile.weather.airHumidityPct}% umidade
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-600 mt-1">
-                      Sem chuva há <strong>{currentProfile.weather.daysWithoutRain} dias</strong> • Prev. 7d: <strong>{currentProfile.weather.forecastRain7DaysMm} mm</strong>
-                    </p>
-                  </div>
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
-                    <span
-                      className={`px-2 py-0.5 rounded-full font-semibold ${
-                        currentProfile.weather.airHumidityPct >= 85
-                          ? 'bg-rose-50 text-rose-800'
-                          : 'bg-emerald-50 text-emerald-800'
-                      }`}
-                    >
-                      {currentProfile.weather.airHumidityPct >= 85
-                        ? 'Cuidado: ar úmido (Vassoura)'
-                        : 'Baixo risco de fungo'}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setOpenExtraPanel(openExtraPanel === 'weather' ? null : 'weather')}
-                      className="font-bold text-emerald-700 hover:underline"
-                    >
-                      Previsão 24h ↓
-                    </button>
-                  </div>
-                </div>
-
-                {/* Card 3: Sua Lavoura */}
-                <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-sm flex flex-col justify-between space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                      Sua Lavoura de Cacau
-                    </span>
-                    <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                      <Sprout className="w-4 h-4" />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-3xl font-black text-slate-900">
-                      {currentProfile.cacaoAreaHa} ha
-                      <span className="text-sm font-semibold text-slate-500 ml-2">
-                        • {currentProfile.estimatedPlants.toLocaleString('pt-BR')} pés
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-600 mt-1">
-                      Gasto atual na irrigação: <strong>{dailyDemandM3} m³/dia</strong>
-                    </p>
-                  </div>
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs">
-                    <span
-                      className={`px-2 py-0.5 rounded-full font-semibold ${
-                        hasHydraulicAlert ? 'bg-amber-50 text-amber-800' : 'bg-emerald-50 text-emerald-800'
-                      }`}
-                    >
-                      {hasHydraulicAlert ? '1 aviso nas mangueiras' : 'Tudo funcionando bem'}
-                    </span>
                     <button
                       type="button"
                       onClick={() => handleSelectTab('automation')}
-                      className="font-bold text-emerald-700 hover:underline inline-flex items-center gap-0.5"
+                      className="text-left p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:border-emerald-400 dark:hover:border-emerald-600 shadow-sm transition group cursor-pointer"
                     >
-                      Ver setores <ArrowUpRight className="w-3.5 h-3.5" />
+                      <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
+                        <Sliders className="w-5 h-5" />
+                      </div>
+                      <div className="font-extrabold text-sm text-slate-900 dark:text-white">
+                        Controlar Rega
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        Ligar válvulas e ver talhões
+                      </p>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSelectTab('simulator')}
+                      className="text-left p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:border-amber-400 dark:hover:border-amber-600 shadow-sm transition group cursor-pointer"
+                    >
+                      <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-950 text-amber-600 dark:text-amber-400 flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
+                        <CloudSun className="w-5 h-5" />
+                      </div>
+                      <div className="font-extrabold text-sm text-slate-900 dark:text-white">
+                        Seca & Telhados
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        Simular dias sem chuva e chuva
+                      </p>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSelectTab('camera_ml')}
+                      className="text-left p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 hover:border-purple-400 dark:hover:border-purple-600 shadow-sm transition group cursor-pointer"
+                    >
+                      <div className="w-10 h-10 rounded-xl bg-purple-100 dark:bg-purple-950 text-purple-600 dark:text-purple-400 flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
+                        <Camera className="w-5 h-5" />
+                      </div>
+                      <div className="font-extrabold text-sm text-slate-900 dark:text-white">
+                        Foto da Folha
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        Checar Vassoura-de-Bruxa
+                      </p>
                     </button>
                   </div>
                 </div>
-              </div>
 
-              {/* 3. PAINEL CENTRAL ESTILO FIGMA: GRÁFICO LIMPO + AÇÕES DO DIA */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-                {/* Gráfico de Área Limpo (7 Cols) */}
-                <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200/80 shadow-sm p-5 space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <h3 className="text-sm font-bold text-slate-900">
-                        Duração da Sua Água nos Próximos 30 Dias
-                      </h3>
-                      <p className="text-xs text-slate-500">
-                        Com gotejamento você ganha <strong className="text-emerald-700">+{autonomyGainDays} dias extras</strong> de água em relação à rega comum.
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3 text-[11px] font-bold">
-                      <span className="inline-flex items-center gap-1.5 text-emerald-700">
-                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                        Gotejamento
-                      </span>
-                      <span className="inline-flex items-center gap-1.5 text-slate-400">
-                        <span className="w-2.5 h-2.5 rounded-full bg-slate-300" />
-                        Rega comum
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="w-full overflow-hidden">
-                    <svg viewBox="0 0 520 185" className="w-full h-44">
-                      <defs>
-                        <linearGradient id="emeraldArea" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#10b981" stopOpacity="0.28" />
-                          <stop offset="100%" stopColor="#10b981" stopOpacity="0.02" />
-                        </linearGradient>
-                      </defs>
-                      {[0.25, 0.5, 0.75, 1].map((f) => {
-                        const y = 162 - f * 144;
-                        return (
-                          <line
-                            key={f}
-                            x1="18"
-                            y1={y}
-                            x2="502"
-                            y2={y}
-                            stroke="#e2e8f0"
-                            strokeDasharray="4 4"
-                            strokeWidth="1"
-                          />
-                        );
-                      })}
-                      <path d={smartAreaPath} fill="url(#emeraldArea)" />
-                      <path
-                        d={sprinklerPath}
-                        fill="none"
-                        stroke="#cbd5e1"
-                        strokeWidth="2.5"
-                        strokeDasharray="6 4"
-                      />
-                      <path d={smartPath} fill="none" stroke="#10b981" strokeWidth="3" />
-                      {smartPts.map((p, idx) => (
-                        <g key={idx}>
-                          <circle cx={p.x} cy={p.y} r="4" fill="#10b981" stroke="#ffffff" strokeWidth="2" />
-                          <text x={p.x} y="179" textAnchor="middle" className="fill-slate-400 text-[10px] font-semibold">
-                            Dia {chartDays[idx]}
-                          </text>
-                        </g>
-                      ))}
-                    </svg>
-                  </div>
-                </div>
-
-                {/* Avisos Práticos de Hoje (5 Cols - Máximo 2 cartões diretos) */}
-                <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200/80 shadow-sm p-5 flex flex-col justify-between space-y-4">
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-bold text-slate-900">
-                      O que checar hoje na roça
-                    </h3>
-
-                    <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 space-y-2">
-                      <div className="flex items-start gap-2 text-xs">
-                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                {/* LINHA 3: NO MÁXIMO 2 AVISOS CLAROS DO DIA */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {hasHydraulicAlert ? (
+                    <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 flex items-center justify-between gap-4">
+                      <div className="flex items-start gap-3">
+                        <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                         <div>
-                          <div className="font-bold text-amber-950">Checar gotejadores entupidos</div>
-                          <p className="text-amber-900 mt-0.5">
-                            A pressão subiu no {activeRegion === 'ilheus' ? 'Talhão 02' : 'Setor C'}. Vale conferir o filtro hoje.
+                          <h4 className="font-extrabold text-sm text-amber-950 dark:text-amber-200">
+                            Pressão alterada em um talhão
+                          </h4>
+                          <p className="text-xs text-amber-800 dark:text-amber-300 mt-0.5">
+                            Confira se há gotejador entupido ou furo na mangueira.
                           </p>
                         </div>
                       </div>
                       <button
                         type="button"
                         onClick={() => handleSelectTab('automation')}
-                        className="w-full py-2 px-3 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs transition-all"
+                        className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shrink-0 cursor-pointer"
                       >
-                        Abrir Controle de Rega →
+                        Ver Talhão
                       </button>
                     </div>
-
-                    <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 space-y-2">
-                      <div className="flex items-start gap-2 text-xs">
-                        <CloudRain className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                  ) : (
+                    <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-4">
+                      <div className="flex items-start gap-3">
+                        <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
                         <div>
-                          <div className="font-bold text-emerald-950">Aproveitar água de telhados</div>
-                          <p className="text-emerald-900 mt-0.5">
-                            Seus {currentProfile.roofCatchmentAreaM2} m² de telhado captam{' '}
-                            <strong>
-                              {Math.round(currentProfile.roofCatchmentAreaM2 * 40 * currentProfile.catchmentEfficiency).toLocaleString('pt-BR')} L
-                            </strong>{' '}
-                            em uma chuva de 40 mm.
+                          <h4 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                            Rede de Gotejamento Normal
+                          </h4>
+                          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            Todos os talhões com pressão e vazão estáveis hoje.
                           </p>
                         </div>
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleSelectTab('simulator')}
-                        className="w-full py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-all"
+                        onClick={() => handleSelectTab('automation')}
+                        className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shrink-0 cursor-pointer"
                       >
-                        Calcular Água da Chuva →
+                        Abrir Rega
                       </button>
                     </div>
-                  </div>
-                </div>
-              </div>
+                  )}
 
-              {/* 4. BOTÕES PARA ACESSAR COISAS EXTRAS CASO NECESSÁRIO (RECOLHIDOS POR PADRÃO!) */}
-              <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-5 space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900">
-                      Quer ver informações extras ou dados técnicos?
-                    </h3>
-                    <p className="text-xs text-slate-500">
-                      Deixamos escondido para manter a tela limpa. Clique abaixo só se precisar:
-                    </p>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
+                  <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                      <CloudRain className="w-5 h-5 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
+                      <div>
+                        <h4 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                          Potencial de Chuva no Telhado
+                        </h4>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                          Seus {currentProfile.roofCatchmentAreaM2} m² juntam{' '}
+                          <strong>{rain40mmLiters.toLocaleString('pt-BR')} L</strong> em chuva de 40 mm.
+                        </p>
+                      </div>
+                    </div>
                     <button
                       type="button"
-                      onClick={() => setOpenExtraPanel(openExtraPanel === 'weather' ? null : 'weather')}
-                      className={`px-3.5 py-2 rounded-xl text-xs font-bold border inline-flex items-center gap-1.5 transition-all ${
-                        openExtraPanel === 'weather'
-                          ? 'bg-sky-600 text-white border-sky-600'
-                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                      }`}
+                      onClick={() => handleSelectTab('simulator')}
+                      className="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs shrink-0 cursor-pointer"
                     >
-                      <CloudSun className="w-4 h-4" />
-                      Previsão 24h e 7 Dias
-                      {openExtraPanel === 'weather' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setOpenExtraPanel(openExtraPanel === 'agronomy' ? null : 'agronomy')}
-                      className={`px-3.5 py-2 rounded-xl text-xs font-bold border inline-flex items-center gap-1.5 transition-all ${
-                        openExtraPanel === 'agronomy'
-                          ? 'bg-emerald-600 text-white border-emerald-600'
-                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                      }`}
-                    >
-                      <Compass className="w-4 h-4" />
-                      Comparar Sul vs. Oeste e Agronomia
-                      {openExtraPanel === 'agronomy' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setOpenExtraPanel(openExtraPanel === 'technical' ? null : 'technical')}
-                      className={`px-3.5 py-2 rounded-xl text-xs font-bold border inline-flex items-center gap-1.5 transition-all ${
-                        openExtraPanel === 'technical'
-                          ? 'bg-indigo-600 text-white border-indigo-600'
-                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                      }`}
-                    >
-                      <Layers className="w-4 h-4" />
-                      Dados Técnicos & INEMA
-                      {openExtraPanel === 'technical' ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                      Calcular
                     </button>
                   </div>
                 </div>
 
-                {/* Conteúdo Extra 1: Previsão Completa */}
-                {openExtraPanel === 'weather' && (
-                  <div className="pt-3 border-t border-slate-100">
-                    <CityWeatherForecast profile={currentProfile} />
-                  </div>
-                )}
+                {/* EXTRA OPCIONAL RECOLHIDO: COMPARATIVO SUL vs OESTE */}
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 overflow-hidden shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setShowRegionCompare((v) => !v)}
+                    className="w-full px-5 py-3.5 flex items-center justify-between text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/60 cursor-pointer"
+                  >
+                    <span>Quer comparar Sul da Bahia (Ilhéus) vs. Oeste Baiano?</span>
+                    {showRegionCompare ? (
+                      <ChevronUp className="w-4 h-4" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4" />
+                    )}
+                  </button>
 
-                {/* Conteúdo Extra 2: Tese Agronômica & Comparação */}
-                {openExtraPanel === 'agronomy' && (
-                  <div className="pt-4 border-t border-slate-100 grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
-                    <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 space-y-2">
-                      <div className="font-bold text-sm text-emerald-950">
-                        {currentProfile.agronomicThesis.headline}
-                      </div>
-                      <p className="text-slate-700 leading-relaxed">
-                        {currentProfile.agronomicThesis.whyDripHere}
-                      </p>
-                      <p className="text-emerald-900 bg-white p-3 rounded-lg border border-emerald-200">
-                        <strong>Base Técnica:</strong> {currentProfile.agronomicThesis.physiologicalSecret}
-                      </p>
-                    </div>
-
-                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-                      <div className="font-bold text-sm text-slate-900">
-                        Comparativo Regional: Sul da Bahia vs. Oeste
-                      </div>
-                      <div className="grid grid-cols-2 gap-2.5">
-                        <div className="bg-white p-3 rounded-lg border border-slate-200">
-                          <div className="text-slate-500">Produtividade Estimada</div>
-                          <div className="text-lg font-black text-emerald-700">
-                            {currentProfile.agronomicThesis.expectedYieldKgHa.toLocaleString('pt-BR')} kg/ha
-                          </div>
-                          <div className="text-slate-400">
-                            Sem irrigação: {currentProfile.agronomicThesis.baselineYieldWithoutDripKgHa} kg/ha
-                          </div>
+                  {showRegionCompare && (
+                    <div className="p-5 pt-2 border-t border-slate-100 dark:border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                      <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 space-y-1.5">
+                        <div className="font-extrabold text-sm text-emerald-900 dark:text-emerald-300">
+                          Sul da Bahia ({ilheusCompare.municipality} — Cabruca)
                         </div>
-                        <div className="bg-white p-3 rounded-lg border border-slate-200">
-                          <div className="text-slate-500">Lâmina Sazonal</div>
-                          <div className="text-lg font-black text-sky-700">
-                            {currentProfile.agronomicThesis.waterConsumptionDripMmSeason} mm
-                          </div>
-                          <div className="text-rose-600">
-                            Aspersão: {currentProfile.agronomicThesis.waterConsumptionSprinklerMmSeason} mm
-                          </div>
+                        <p className="text-slate-700 dark:text-slate-300">
+                          Clima mais úmido ({ilheusCompare.weather.airHumidityPct}% UR) e morros ({ilheusCompare.terrainSlopePct ?? 16}%). Foco em travar a Vassoura-de-Bruxa molhando só a raiz e segurar água de enxurrada.
+                        </p>
+                      </div>
+                      <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 space-y-1.5">
+                        <div className="font-extrabold text-sm text-amber-900 dark:text-amber-300">
+                          Oeste Baiano ({oesteCompare.municipality} — Pleno Sol)
                         </div>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setActiveRegion('ilheus')}
-                          className={`flex-1 py-2 rounded-lg font-bold border ${
-                            activeRegion === 'ilheus' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-300'
-                          }`}
-                        >
-                          Ver Ilhéus (Cabruca)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setActiveRegion('oeste')}
-                          className={`flex-1 py-2 rounded-lg font-bold border ${
-                            activeRegion === 'oeste' ? 'bg-amber-500 text-slate-950 border-amber-500' : 'bg-white text-slate-700 border-slate-300'
-                          }`}
-                        >
-                          Ver Oeste (Pleno Sol)
-                        </button>
+                        <p className="text-slate-700 dark:text-slate-300">
+                          Ar seco ({oesteCompare.weather.airHumidityPct}% UR) evita fungos naturalmente e áreas planas ({oesteCompare.terrainSlopePct ?? 4}%). Foco em rega noturna (-38% energia) e limite de Outorga.
+                        </p>
                       </div>
                     </div>
-                  </div>
-                )}
-
-                {/* Conteúdo Extra 3: Técnico, LoRa & Outorga */}
-                {openExtraPanel === 'technical' && (
-                  <div className="pt-4 border-t border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                      <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                        <Landmark className="w-4 h-4 text-indigo-600" />
-                        Regularidade INEMA
-                      </div>
-                      <div>Instrumento: <strong>{currentProfile.regulation.legalInstrument}</strong></div>
-                      <div>Uso vs. Limite: <strong>{currentProfile.regulation.currentWithdrawalM3Day} / {currentProfile.regulation.authorizedFlowM3Day} m³/dia</strong></div>
-                      <div>CAR/CEFIR: <strong>{currentProfile.regulation.carStatus}</strong></div>
-                    </div>
-
-                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                      <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                        <Layers className="w-4 h-4 text-sky-600" />
-                        Auditoria de Reservatórios
-                      </div>
-                      <div>Capacidade Nominal: <strong>{totalNominalM3.toLocaleString('pt-BR')} m³</strong></div>
-                      <div>Volume Aparente na Régua: <strong>{totalApparentM3.toLocaleString('pt-BR')} m³</strong></div>
-                      <div>Volume Útil Real: <strong className="text-emerald-700">{totalRealM3.toLocaleString('pt-BR')} m³</strong></div>
-                    </div>
-
-                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
-                      <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                        <WifiOff className="w-4 h-4 text-emerald-600" />
-                        Operação de Campo
-                      </div>
-                      <div>Conectividade: <strong>LoRa Offline-First Ativo</strong></div>
-                      <div>Sistema: <strong>{currentProfile.cultivationSystem}</strong></div>
-                      <div>Solo: <strong>{currentProfile.soilType}</strong></div>
-                    </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {activeTab === 'mapa' && (
-            <FarmMap2D3D
-              profile={currentProfile}
-              onUpdateProfile={handleUpdateCurrentProfile}
-              onOpenSimulator={() => handleSelectTab('simulator')}
-            />
-          )}
+            {activeTab === 'mapa' && (
+              <div data-tour="map-panel">
+                <FarmMap2D3D
+                  profile={currentProfile}
+                  onUpdateProfile={handleUpdateCurrentProfile}
+                  onOpenSimulator={() => handleSelectTab('simulator')}
+                />
+              </div>
+            )}
 
-          {activeTab === 'automation' && (
-            <AutomationTab
-              profile={currentProfile}
-              onUpdateProfile={handleUpdateCurrentProfile}
-            />
-          )}
+            {activeTab === 'automation' && (
+              <div data-tour="automation-panel">
+                <AutomationTab
+                  profile={currentProfile}
+                  onUpdateProfile={handleUpdateCurrentProfile}
+                />
+              </div>
+            )}
 
-          {activeTab === 'camera_ml' && (
-            <CameraVisionTab
-              profile={currentProfile}
-              onUpdateProfile={handleUpdateCurrentProfile}
-            />
-          )}
+            {activeTab === 'simulator' && (
+              <DroughtSimulatorTab
+                profile={currentProfile}
+                onUpdateProfile={handleUpdateCurrentProfile}
+              />
+            )}
 
-          {activeTab === 'simulator' && (
-            <DroughtSimulatorTab
-              profile={currentProfile}
-              onUpdateProfile={handleUpdateCurrentProfile}
-            />
-          )}
+            {activeTab === 'camera_ml' && (
+              <CameraVisionTab
+                profile={currentProfile}
+                onUpdateProfile={handleUpdateCurrentProfile}
+              />
+            )}
 
-          {activeTab === 'regulation' && (
-            <RegulationCreditTab profile={currentProfile} />
-          )}
+            {activeTab === 'regulation' && (
+              <div data-tour="regulation-panel">
+                <RegulationCreditTab profile={currentProfile} />
+              </div>
+            )}
 
-          {activeTab === 'property_ai' && (
-            <PropertyAndAiTab
-              profile={currentProfile}
-              onUpdateProfile={handleUpdateCurrentProfile}
-              onResetProfile={handleResetProfiles}
-              brandName={brandName}
-              onChangeBrandName={setBrandName}
-              onOpenWizard={() => setIsWizardOpen(true)}
-            />
-          )}
+            {activeTab === 'emergency' && (
+              <PropertyAndEmergencyTab
+                profile={currentProfile}
+                onUpdateProfile={handleUpdateCurrentProfile}
+                onResetProfile={handleResetProfiles}
+                brandName={brandName}
+                onChangeBrandName={setBrandName}
+                onOpenWizard={() => setIsWizardOpen(true)}
+              />
+            )}
+          </div>
         </main>
       </div>
+
+      {/* BARRA INFERIOR ESTILO APP NO CELULAR */}
+      <nav
+        aria-label="Navegação rápida no celular"
+        className={`${
+          isMobilePreview ? 'grid' : 'grid lg:hidden'
+        } fixed bottom-0 inset-x-0 z-40 grid-cols-5 bg-white/95 dark:bg-[#111827]/95 backdrop-blur-md border-t border-slate-200/90 dark:border-slate-800 shadow-[0_-4px_20px_rgba(0,0,0,0.08)] pb-safe`}
+      >
+        {(
+          [
+            { id: 'overview', label: 'Início', icon: Home },
+            { id: 'mapa', label: 'Mapa', icon: MapPin },
+            { id: 'automation', label: 'Rega', icon: Sliders, alert: hasHydraulicAlert },
+            { id: 'camera_ml', label: 'Folha', icon: Camera },
+          ] as Array<{
+            id: NavTab;
+            label: string;
+            icon: React.FC<{ className?: string }>;
+            alert?: boolean;
+          }>
+        ).map((item) => {
+          const Icon = item.icon;
+          const isActive = activeTab === item.id && !isMobileMoreOpen;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => handleSelectTab(item.id)}
+              className={`relative flex flex-col items-center justify-center py-2 px-1 min-h-[56px] text-[11px] font-bold transition-colors cursor-pointer ${
+                isActive
+                  ? 'text-emerald-700 dark:text-emerald-400'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+              }`}
+            >
+              <div
+                className={`p-1.5 rounded-xl mb-0.5 relative ${
+                  isActive ? 'bg-emerald-100 dark:bg-emerald-950/70' : ''
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                {item.alert && (
+                  <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-500 ring-2 ring-white dark:ring-slate-900" />
+                )}
+              </div>
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+
+        <button
+          type="button"
+          onClick={() => setIsMobileMoreOpen((v) => !v)}
+          className={`relative flex flex-col items-center justify-center py-2 px-1 min-h-[56px] text-[11px] font-bold transition-colors cursor-pointer ${
+            isMobileMoreOpen || isMoreTabActive
+              ? 'text-emerald-700 dark:text-emerald-400'
+              : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+          }`}
+        >
+          <div
+            className={`p-1.5 rounded-xl mb-0.5 relative ${
+              isMobileMoreOpen || isMoreTabActive
+                ? 'bg-emerald-100 dark:bg-emerald-950/70'
+                : ''
+            }`}
+          >
+            <MoreHorizontal className="w-4 h-4" />
+          </div>
+          <span>Mais</span>
+        </button>
+      </nav>
+
+      {/* BOTTOM SHEET MOBILE ("Mais") */}
+      {isMobileMoreOpen && (
+        <div className={isMobilePreview ? '' : 'lg:hidden'}>
+          <div
+            className="fixed inset-0 z-40 bg-slate-950/55 backdrop-blur-[1px]"
+            onClick={() => setIsMobileMoreOpen(false)}
+          />
+          <div className="fixed bottom-0 inset-x-0 z-50 bg-white dark:bg-slate-900 rounded-t-3xl border-t border-slate-200 dark:border-slate-800 p-5 pb-safe shadow-2xl space-y-4">
+            <div className="w-10 h-1 bg-slate-300 dark:bg-slate-700 rounded-full mx-auto" />
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-black text-slate-900 dark:text-white">
+                  Mais Ferramentas
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Simulador, INEMA/BNB, guia e ajustes rápidos
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsMobileMoreOpen(false)}
+                aria-label="Fechar menu"
+                className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              {(
+                [
+                  { id: 'simulator', label: 'Seca e Chuva', desc: 'Dias de água e chuva no telhado', icon: CloudSun },
+                  { id: 'regulation', label: 'Outorga e Crédito', desc: 'INEMA e Banco do Nordeste (PDF)', icon: Scale },
+                  { id: 'emergency', label: 'Seca & Fazenda', desc: 'Lista da seca e editar dados', icon: ClipboardCheck },
+                ] as Array<{
+                  id: NavTab;
+                  label: string;
+                  desc: string;
+                  icon: React.FC<{ className?: string }>;
+                }>
+              ).map((item) => {
+                const Icon = item.icon;
+                const active = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleSelectTab(item.id)}
+                    className={`w-full p-3.5 rounded-2xl border flex items-center justify-between text-left transition cursor-pointer ${
+                      active
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'bg-slate-50 dark:bg-slate-800/70 border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={`w-9 h-9 rounded-xl flex items-center justify-center ${
+                          active
+                            ? 'bg-white/20 text-white'
+                            : 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 border border-slate-200 dark:border-slate-700'
+                        }`}
+                      >
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-extrabold">{item.label}</div>
+                        <div
+                          className={`text-xs ${
+                            active ? 'text-emerald-100' : 'text-slate-500 dark:text-slate-400'
+                          }`}
+                        >
+                          {item.desc}
+                        </div>
+                      </div>
+                    </div>
+                    <ArrowRight className="w-4 h-4 shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileMoreOpen(false);
+                  setIsTourOpen(true);
+                }}
+                className="py-2.5 px-3 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Compass className="w-4 h-4" />
+                Tour na Tela
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileMoreOpen(false);
+                  setIsTutorialOpen(true);
+                }}
+                className="py-2.5 px-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <HelpCircle className="w-4 h-4" />
+                Tutorial & Guia
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileMoreOpen(false);
+                  setIsWizardOpen(true);
+                }}
+                className="py-2.5 px-3 rounded-xl bg-orange-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <UserPlus className="w-4 h-4" />
+                + Cadastrar Fazenda
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  handleResetProfiles();
+                  setIsMobileMoreOpen(false);
+                }}
+                className="py-2.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Restaurar Padrão
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAIS E TOUR INTERATIVO */}
+      <FarmerSetupWizard
+        isOpen={isWizardOpen}
+        onClose={() => setIsWizardOpen(false)}
+        onApplyNewFarm={handleApplyNewFarmFromWizard}
+      />
+
+      <InteractiveTutorialModal
+        isOpen={isTutorialOpen}
+        onClose={() => setIsTutorialOpen(false)}
+        onNavigateTab={handleSelectTab}
+        onOpenWizard={() => {
+          setIsTutorialOpen(false);
+          setIsWizardOpen(true);
+        }}
+        onStartTour={() => {
+          setIsTutorialOpen(false);
+          setIsTourOpen(true);
+        }}
+      />
+
+      <AppTourOverlay
+        isOpen={isTourOpen}
+        onClose={() => setIsTourOpen(false)}
+        onNavigateTab={handleSelectTab}
+      />
     </div>
   );
+
+  if (isMobilePreview) {
+    return (
+      <div className="min-h-screen bg-slate-900 dark:bg-black flex flex-col items-center justify-center p-3 sm:p-5 gap-3">
+        <div className="flex flex-wrap items-center justify-center gap-3 bg-slate-800/95 text-white px-4 py-2 rounded-2xl border border-slate-700 shadow-lg text-xs">
+          <span className="inline-flex items-center gap-1.5 font-bold text-emerald-400">
+            <Smartphone className="w-4 h-4" />
+            Modo Celular (Prévia 404 px)
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setIsMobileMoreOpen(false);
+              setIsMobilePreview(false);
+            }}
+            className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            <Monitor className="w-3.5 h-3.5" />
+            Voltar para Modo PC
+          </button>
+        </div>
+        {shellContent}
+      </div>
+    );
+  }
+
+  return shellContent;
 }
 
 export default App;

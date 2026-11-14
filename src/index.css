@@ -3,9 +3,99 @@
 @tailwind utilities;
 
 @layer base {
-  body {
+  html, body {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    overflow-x: hidden;
+    -webkit-tap-highlight-color: transparent;
   }
+}
+
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* Quando em "Modo Celular" no desktop, força os grids/colunas desktop para layout vertical de smartphone */
+.mobile-force .lg\:grid-cols-12,
+.mobile-force .lg\:grid-cols-3,
+.mobile-force .lg\:grid-cols-2,
+.mobile-force .md\:grid-cols-4,
+.mobile-force .md\:grid-cols-3,
+.mobile-force .md\:grid-cols-2,
+.mobile-force .sm\:grid-cols-12,
+.mobile-force .sm\:grid-cols-3,
+.mobile-force .sm\:grid-cols-2 {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+.mobile-force .lg\:grid-cols-4,
+.mobile-force .lg\:grid-cols-7,
+.mobile-force .sm\:grid-cols-4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+
+.mobile-force .lg\:col-span-8,
+.mobile-force .lg\:col-span-7,
+.mobile-force .lg\:col-span-5,
+.mobile-force .lg\:col-span-4,
+.mobile-force .sm\:col-span-8,
+.mobile-force .sm\:col-span-4 {
+  grid-column: span 1 / span 1 !important;
+}
+
+.mobile-force .lg\:order-1 {
+  order: 2 !important;
+}
+
+.mobile-force .lg\:order-2 {
+  order: 1 !important;
+}
+
+.mobile-force .lg\:flex-row,
+.mobile-force .sm\:flex-row {
+  flex-direction: column !important;
+  align-items: stretch !important;
+}
+
+.mobile-force .mobile-map-box {
+  height: 330px !important;
+}
+
+/* Custom Leaflet adjustments so markers & tiles look crisp and never cover app modals */
+.leaflet-container {
+  font-family: inherit;
+  z-index: 1;
+  background-color: #dcfce7;
+}
+
+.dark .leaflet-container {
+  background-color: #0f172a;
+}
+
+.agrociclo-vertex-icon {
+  background: transparent;
+  border: none;
+}
+
+.agrociclo-sede-icon {
+  background: transparent;
+  border: none;
+}
+
+/* Spotlight pulse for guided app tour (uses outline so box-shadow backdrop mask is preserved) */
+@keyframes tourPulse {
+  0%, 100% {
+    outline: 3px solid rgba(16, 185, 129, 0.9);
+    outline-offset: 2px;
+  }
+  50% {
+    outline: 5px solid rgba(52, 211, 153, 1);
+    outline-offset: 5px;
+  }
+}
+
+.tour-spotlight {
+  animation: tourPulse 1.6s ease-in-out infinite;
+  border-radius: 1rem;
 }
 
 @media print {

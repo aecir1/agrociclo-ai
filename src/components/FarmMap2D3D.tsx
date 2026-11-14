@@ -1,25 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import {
   MapPin,
-  Crosshair,
   Undo2,
   Trash2,
   CheckCircle2,
   RotateCcw,
   Compass,
   Navigation,
-  Maximize2,
   Pencil,
-  ZoomIn,
-  ZoomOut,
   Box,
   Map as MapIcon,
   Satellite,
-  Trees,
-  Info,
   Mountain,
   CloudRain,
-  ArrowRight
+  ArrowRight,
+  Crosshair,
+  ZoomIn,
+  ZoomOut
 } from 'lucide-react';
 import { LatLonPoint, PropertyProfile } from '../types';
 import {
@@ -29,6 +28,7 @@ import {
   getTerrainElevationM,
   localMetersToLatLon
 } from '../utils/geoMap';
+import { ToggleSwitch } from './ToggleSwitch';
 
 interface FarmMap2D3DProps {
   profile: PropertyProfile;
@@ -37,15 +37,34 @@ interface FarmMap2D3DProps {
 }
 
 const BAHIA_PRESETS: Array<{ label: string; lat: number; lon: number }> = [
-  { label: 'Ilhéus • Zona Rural/Cabruca', lat: -14.7565, lon: -39.2245 },
+  { label: 'Ilhéus • Zona Rural', lat: -14.7565, lon: -39.2245 },
   { label: 'Itabuna • CEPLAC', lat: -14.7695, lon: -39.2312 },
   { label: 'Uruçuca (Cacau)', lat: -14.5931, lon: -39.2844 },
   { label: 'Camacan', lat: -15.4192, lon: -39.4958 },
-  { label: 'Riachão das Neves (Oeste)', lat: -11.7462, lon: -44.9102 },
+  { label: 'Riachão das Neves', lat: -11.7462, lon: -44.9102 },
   { label: 'Barreiras (Oeste)', lat: -12.1528, lon: -44.9901 }
 ];
 
-type VisualStyle = 'agro' | 'satellite';
+type LeafletLayerStyle = 'satellite' | 'streets' | 'topo';
+type MapEngineMode = 'leaflet' | 'relief3d';
+
+const TILE_PROVIDERS: Record<LeafletLayerStyle, { url: string; attribution: string; maxZoom: number }> = {
+  satellite: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Tiles © Esri',
+    maxZoom: 18
+  },
+  streets: {
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '© OpenStreetMap',
+    maxZoom: 19
+  },
+  topo: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Tiles © Esri Topo',
+    maxZoom: 18
+  }
+};
 
 function latLonToLocalMeters(
   lat: number,
@@ -61,14 +80,6 @@ function latLonToLocalMeters(
   };
 }
 
-function lonLatToTileXY(lon: number, lat: number, zoom: number): { x: number; y: number } {
-  const n = Math.pow(2, zoom);
-  const x = ((lon + 180) / 360) * n;
-  const latRad = (lat * Math.PI) / 180;
-  const y = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n;
-  return { x, y };
-}
-
 export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
   profile,
   onUpdateProfile,
@@ -80,49 +91,51 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
   const slopePct = profile.terrainSlopePct ?? (profile.id === 'oeste' ? 4 : 16);
   const vertices: LatLonPoint[] = profile.polygonVertices ?? [];
 
+  const [engineMode, setEngineMode] = useState<MapEngineMode>('leaflet');
+  const [layerStyle, setLayerStyle] = useState<LeafletLayerStyle>('satellite');
+  const [drawingMode, setDrawingMode] = useState<boolean>(true);
+  const [showRunoffArrows, setShowRunoffArrows] = useState<boolean>(true);
+  const [showManualCoords, setShowManualCoords] = useState<boolean>(false);
   const [latInput, setLatInput] = useState<string>(String(originLat));
   const [lonInput, setLonInput] = useState<string>(String(originLon));
-  const [viewMode, setViewMode] = useState<'2d' | '3d'>('3d');
-  const [visualStyle, setVisualStyle] = useState<VisualStyle>('agro');
-  const [drawingMode, setDrawingMode] = useState<boolean>(true);
-  const [showRelief3D, setShowRelief3D] = useState<boolean>(true);
-  const [showRunoffArrows, setShowRunoffArrows] = useState<boolean>(true);
-  const [sampleRainMm, setSampleRainMm] = useState<number>(45);
-  const [bearingDeg, setBearingDeg] = useState<number>(-18);
-  const [pixelsPerMeter, setPixelsPerMeter] = useState<number>(0.55);
-  const [panOffsetM, setPanOffsetM] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [gpsStatus, setGpsStatus] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState<boolean>(false);
-  const [satelliteStatus, setSatelliteStatus] = useState<'idle' | 'loading' | 'ok' | 'fallback'>('idle');
-  const [showCoordsHelp, setShowCoordsHelp] = useState<boolean>(false);
+  const [tileOfflineWarning, setTileOfflineWarning] = useState<boolean>(false);
 
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const tileCacheRef = useRef<Map<string, HTMLImageElement | 'blocked'>>(new Map());
-  const dragStateRef = useRef<{
+  // 3D canvas states
+  const [bearingDeg, setBearingDeg] = useState<number>(-18);
+  const [pixelsPerMeter, setPixelsPerMeter] = useState<number>(0.52);
+  const [panOffsetM, setPanOffsetM] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  // Refs for Leaflet map & overlays
+  const leafletContainerRef = useRef<HTMLDivElement | null>(null);
+  const leafletMapRef = useRef<L.Map | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const overlayGroupRef = useRef<L.LayerGroup | null>(null);
+  const lastRegionRef = useRef<string>(profile.id);
+
+  // Refs for latest callback values inside Leaflet event handlers
+  const profileRef = useRef<PropertyProfile>(profile);
+  profileRef.current = profile;
+  const drawingModeRef = useRef<boolean>(drawingMode);
+  drawingModeRef.current = drawingMode;
+  const onUpdateProfileRef = useRef(onUpdateProfile);
+  onUpdateProfileRef.current = onUpdateProfile;
+
+  // 3D Canvas refs
+  const canvas3DRef = useRef<HTMLCanvasElement | null>(null);
+  const drag3DRef = useRef<{
     active: boolean;
-    type: 'pan' | 'vertex' | 'sede';
-    vertexIdx: number;
     startClientX: number;
     startClientY: number;
     startPanX: number;
     startPanY: number;
-    moved: boolean;
-  }>({
-    active: false,
-    type: 'pan',
-    vertexIdx: -1,
-    startClientX: 0,
-    startClientY: 0,
-    startPanX: 0,
-    startPanY: 0,
-    moved: false
-  });
+  }>({ active: false, startClientX: 0, startClientY: 0, startPanX: 0, startPanY: 0 });
 
   useEffect(() => {
     setLatInput(String(originLat));
     setLonInput(String(originLon));
-    setPanOffsetM({ x: 0, y: 0 });
-  }, [originLat, originLon, profile.id]);
+  }, [originLat, originLon]);
 
   const geometry = useMemo(
     () => calculateFarmGeometry(originLat, originLon, farmRadiusM, vertices),
@@ -139,187 +152,245 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
     () =>
       calculateReliefRainImpact({
         slopePct,
-        rainMm: sampleRainMm,
+        rainMm: 45,
         cacaoAreaHa: profile.cacaoAreaHa,
         hasMulchingOrCabruca: profile.id === 'ilheus',
         hasContourDitches: false,
         dailyDemandM3
       }),
-    [dailyDemandM3, profile.cacaoAreaHa, profile.id, sampleRainMm, slopePct]
+    [dailyDemandM3, profile.cacaoAreaHa, profile.id, slopePct]
   );
 
-  const reliefZ = useCallback(
-    (mx: number, my: number) => {
-      if (viewMode !== '3d' || !showRelief3D) return 0;
-      return getTerrainElevationM(mx, my, slopePct, profile.id);
-    },
-    [profile.id, showRelief3D, slopePct, viewMode]
-  );
-
-  // Elevação min/max dentro da vizinhança da fazenda para exibição didática
   const elevationBounds = useMemo(() => {
     let minE = Infinity;
     let maxE = -Infinity;
     let maxPt = { x: 0, y: 0 };
-    let minPt = { x: 0, y: 0 };
-    for (let x = -420; x <= 420; x += 60) {
-      for (let y = -420; y <= 420; y += 60) {
+    for (let x = -420; x <= 420; x += 70) {
+      for (let y = -420; y <= 420; y += 70) {
         const e = getTerrainElevationM(x, y, slopePct, profile.id);
         if (e > maxE) {
           maxE = e;
           maxPt = { x, y };
         }
-        if (e < minE) {
-          minE = e;
-          minPt = { x, y };
-        }
+        if (e < minE) minE = e;
       }
     }
     return {
       minM: Math.round(minE),
       maxM: Math.round(maxE),
       diffM: Math.max(0, Math.round(maxE - minE)),
-      maxPt,
-      minPt
+      maxPt
     };
   }, [profile.id, slopePct]);
 
-  // Projeção isométrica exata 2D <-> 3D (zElev = altitude real, zExtra = estruturas acima do solo)
-  const projectPoint = useCallback(
+  // =========================================================
+  // 1. REAL LEAFLET MAP ENGINE
+  // =========================================================
+  useEffect(() => {
+    if (engineMode !== 'leaflet') return;
+    const container = leafletContainerRef.current;
+    if (!container) return;
+
+    const map = L.map(container, {
+      center: [originLat, originLon],
+      zoom: 16,
+      zoomControl: true
+    });
+
+    const overlayGroup = L.layerGroup().addTo(map);
+    leafletMapRef.current = map;
+    overlayGroupRef.current = overlayGroup;
+
+    map.on('click', (e: L.LeafletMouseEvent) => {
+      if (!drawingModeRef.current) return;
+      const curr = profileRef.current;
+      const nextPt: LatLonPoint = {
+        lat: Number(e.latlng.lat.toFixed(6)),
+        lon: Number(e.latlng.lng.toFixed(6))
+      };
+      onUpdateProfileRef.current({
+        ...curr,
+        polygonVertices: [...(curr.polygonVertices ?? []), nextPt]
+      });
+    });
+
+    // Keep Leaflet viewport sized accurately on mobile orientation & phone preview transitions
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => {
+            map.invalidateSize();
+          })
+        : null;
+    if (resizeObserver) resizeObserver.observe(container);
+
+    const mountTimer = window.setTimeout(() => {
+      map.invalidateSize();
+    }, 120);
+
+    return () => {
+      window.clearTimeout(mountTimer);
+      if (resizeObserver) resizeObserver.disconnect();
+      map.remove();
+      leafletMapRef.current = null;
+      tileLayerRef.current = null;
+      overlayGroupRef.current = null;
+    };
+  }, [engineMode]);
+
+  // Update Leaflet base tile layer cleanly
+  useEffect(() => {
+    const map = leafletMapRef.current;
+    if (!map || engineMode !== 'leaflet') return;
+
+    if (tileLayerRef.current) {
+      map.removeLayer(tileLayerRef.current);
+      tileLayerRef.current = null;
+    }
+
+    setTileOfflineWarning(false);
+    let errCount = 0;
+    const cfg = TILE_PROVIDERS[layerStyle];
+    const layer = L.tileLayer(cfg.url, {
+      attribution: cfg.attribution,
+      maxZoom: cfg.maxZoom
+    });
+
+    layer.on('tileerror', () => {
+      errCount++;
+      if (errCount >= 3) setTileOfflineWarning(true);
+    });
+
+    layer.addTo(map);
+    tileLayerRef.current = layer;
+  }, [layerStyle, engineMode]);
+
+  // Recenter Leaflet when switching region or explicitly updating coordinates far away
+  useEffect(() => {
+    const map = leafletMapRef.current;
+    if (!map || engineMode !== 'leaflet') return;
+    if (lastRegionRef.current !== profile.id) {
+      lastRegionRef.current = profile.id;
+      map.setView([originLat, originLon], 16, { animate: true });
+    }
+  }, [profile.id, originLat, originLon, engineMode]);
+
+  // Render Leaflet Polygon, Radius Circle, Sede Pin, and Draggable Corners
+  useEffect(() => {
+    const map = leafletMapRef.current;
+    const group = overlayGroupRef.current;
+    if (!map || !group || engineMode !== 'leaflet') return;
+
+    group.clearLayers();
+
+    // 1. Blue dashed radius circle
+    L.circle([originLat, originLon], {
+      radius: farmRadiusM,
+      color: '#0284c7',
+      weight: 2,
+      dashArray: '6, 6',
+      fillColor: '#0ea5e9',
+      fillOpacity: 0.08,
+      interactive: false
+    }).addTo(group);
+
+    // 2. Green delimited farm polygon
+    if (vertices.length >= 2) {
+      const latLngs = vertices.map((v) => [v.lat, v.lon] as [number, number]);
+      if (vertices.length >= 3) {
+        L.polygon(latLngs, {
+          color: '#059669',
+          weight: 3,
+          fillColor: '#10b981',
+          fillOpacity: 0.24,
+          interactive: false
+        }).addTo(group);
+      } else {
+        L.polyline(latLngs, {
+          color: '#059669',
+          weight: 3,
+          interactive: false
+        }).addTo(group);
+      }
+    }
+
+    // 3. Draggable Corner Vertices (numbered badges)
+    vertices.forEach((v, idx) => {
+      const icon = L.divIcon({
+        className: 'agrociclo-vertex-icon',
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+        html: `<div style="width:22px;height:22px;border-radius:9999px;background:#f59e0b;border:2.5px solid #ffffff;color:#0f172a;font-weight:800;font-size:10px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.35);cursor:move;">${
+          idx + 1
+        }</div>`
+      });
+
+      const marker = L.marker([v.lat, v.lon], {
+        icon,
+        draggable: true
+      }).addTo(group);
+
+      marker.on('dragend', () => {
+        const pos = marker.getLatLng();
+        const curr = profileRef.current;
+        const nextVerts = [...(curr.polygonVertices ?? [])];
+        nextVerts[idx] = {
+          lat: Number(pos.lat.toFixed(6)),
+          lon: Number(pos.lng.toFixed(6))
+        };
+        onUpdateProfileRef.current({ ...curr, polygonVertices: nextVerts });
+      });
+    });
+
+    // 4. Draggable Sede Pin
+    const sedeIcon = L.divIcon({
+      className: 'agrociclo-sede-icon',
+      iconSize: [30, 30],
+      iconAnchor: [15, 15],
+      html: `<div style="width:30px;height:30px;border-radius:9999px;background:#e11d48;border:3px solid #ffffff;color:#ffffff;font-weight:900;font-size:11px;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 10px rgba(0,0,0,0.45);cursor:grab;">S</div>`
+    });
+
+    const sedeMarker = L.marker([originLat, originLon], {
+      icon: sedeIcon,
+      draggable: true
+    })
+      .bindTooltip('Sede da Fazenda (Arraste para mover)', { direction: 'top', offset: [0, -14] })
+      .addTo(group);
+
+    sedeMarker.on('dragend', () => {
+      const pos = sedeMarker.getLatLng();
+      const curr = profileRef.current;
+      onUpdateProfileRef.current({
+        ...curr,
+        latitude: Number(pos.lat.toFixed(6)),
+        longitude: Number(pos.lng.toFixed(6))
+      });
+    });
+  }, [originLat, originLon, farmRadiusM, vertices, engineMode]);
+
+  // =========================================================
+  // 2. POLISHED 3D RELIEF & RAIN FLOW ENGINE
+  // =========================================================
+  const project3D = useCallback(
     (mx: number, my: number, zMeters: number, width: number, height: number) => {
       const cx = width / 2;
-      const cy = height / 2 + (viewMode === '3d' ? 34 : 0);
-
+      const cy = height / 2 + 30;
       const dx = mx - panOffsetM.x;
       const dy = my - panOffsetM.y;
-
-      const rad = (viewMode === '3d' ? bearingDeg : 0) * (Math.PI / 180);
+      const rad = bearingDeg * (Math.PI / 180);
       const rx = dx * Math.cos(rad) - dy * Math.sin(rad);
       const ry = dx * Math.sin(rad) + dy * Math.cos(rad);
-
-      if (viewMode === '2d') {
-        return {
-          sx: cx + rx * pixelsPerMeter,
-          sy: cy - ry * pixelsPerMeter,
-          ryRot: ry
-        };
-      }
-
-      const tiltFactor = 0.56;
-      const zScale = 1.6;
       return {
         sx: cx + rx * pixelsPerMeter,
-        sy: cy - ry * pixelsPerMeter * tiltFactor - zMeters * pixelsPerMeter * zScale,
+        sy: cy - ry * pixelsPerMeter * 0.56 - zMeters * pixelsPerMeter * 1.55,
         ryRot: ry
       };
     },
-    [bearingDeg, panOffsetM.x, panOffsetM.y, pixelsPerMeter, viewMode]
+    [bearingDeg, panOffsetM.x, panOffsetM.y, pixelsPerMeter]
   );
 
-  // Projeção inversa iterativa considerando a superfície 3D do relevo
-  const screenToLocalMeters = useCallback(
-    (sx: number, sy: number, width: number, height: number): { mx: number; my: number } => {
-      const cx = width / 2;
-      const cy = height / 2 + (viewMode === '3d' ? 34 : 0);
-
-      if (viewMode === '2d') {
-        const rx = (sx - cx) / pixelsPerMeter;
-        const ry = -(sy - cy) / pixelsPerMeter;
-        return { mx: rx + panOffsetM.x, my: ry + panOffsetM.y };
-      }
-
-      const tiltFactor = 0.56;
-      const zScale = 1.6;
-      const rx = (sx - cx) / pixelsPerMeter;
-      const rad = -bearingDeg * (Math.PI / 180);
-
-      let zGuess = 0;
-      let mx = panOffsetM.x;
-      let my = panOffsetM.y;
-
-      for (let iter = 0; iter < 5; iter++) {
-        const ry = (cy - sy - zGuess * pixelsPerMeter * zScale) / (pixelsPerMeter * tiltFactor);
-        const dx = rx * Math.cos(rad) - ry * Math.sin(rad);
-        const dy = rx * Math.sin(rad) + ry * Math.cos(rad);
-        mx = dx + panOffsetM.x;
-        my = dy + panOffsetM.y;
-        zGuess = showRelief3D ? getTerrainElevationM(mx, my, slopePct, profile.id) : 0;
-      }
-
-      return { mx, my };
-    },
-    [bearingDeg, panOffsetM.x, panOffsetM.y, pixelsPerMeter, profile.id, showRelief3D, slopePct, viewMode]
-  );
-
-  // Carrega grade 5x5 de tiles Esri via fetch CORS validado
-  useEffect(() => {
-    if (visualStyle !== 'satellite') {
-      setSatelliteStatus('idle');
-      return;
-    }
-
-    let cancelled = false;
-    setSatelliteStatus('loading');
-
-    const zoom = 15;
-    const centerTile = lonLatToTileXY(originLon, originLat, zoom);
-    const tx0 = Math.floor(centerTile.x);
-    const ty0 = Math.floor(centerTile.y);
-    const cache = tileCacheRef.current;
-
-    const coordsToLoad: Array<{ z: number; x: number; y: number }> = [];
-    for (let dx = -2; dx <= 2; dx++) {
-      for (let dy = -2; dy <= 2; dy++) {
-        coordsToLoad.push({ z: zoom, x: tx0 + dx, y: ty0 + dy });
-      }
-    }
-
-    Promise.all(
-      coordsToLoad.map(async ({ z, x, y }) => {
-        const key = `${z}/${x}/${y}`;
-        if (cache.has(key)) return cache.get(key) !== 'blocked';
-        try {
-          const url = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
-          const res = await fetch(url, { mode: 'cors' });
-          if (!res.ok) {
-            cache.set(key, 'blocked');
-            return false;
-          }
-          const contentType = res.headers.get('content-type') || '';
-          if (!contentType.startsWith('image/')) {
-            cache.set(key, 'blocked');
-            return false;
-          }
-          const blob = await res.blob();
-          const objUrl = URL.createObjectURL(blob);
-          const img = new Image();
-          await new Promise<void>((resolve, reject) => {
-            img.onload = () => resolve();
-            img.onerror = () => reject(new Error('Image error'));
-            img.src = objUrl;
-          });
-          cache.set(key, img);
-          return true;
-        } catch {
-          cache.set(key, 'blocked');
-          return false;
-        }
-      })
-    ).then((results) => {
-      if (cancelled) return;
-      const anyOk = results.some(Boolean);
-      setSatelliteStatus(anyOk ? 'ok' : 'fallback');
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [visualStyle, originLat, originLon]);
-
-  // Desenho completo no Canvas (2D & 3D com Malha de Relevo Sombreada + Escoamento + Satélite)
-  const drawMap = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  const draw3D = useCallback(() => {
+    const canvas = canvas3DRef.current;
+    if (!canvas || engineMode !== 'relief3d') return;
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
@@ -337,632 +408,194 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
     ctx.save();
     ctx.scale(dpr, dpr);
 
-    const hasSatellite = visualStyle === 'satellite' && satelliteStatus === 'ok';
-
-    // Fundo limpo atrás da cena
-    ctx.fillStyle = hasSatellite
-      ? '#143326'
-      : viewMode === '3d'
-      ? '#e8f4ee'
-      : profile.id === 'oeste'
-      ? '#fef9c3'
-      : '#ecfdf5';
+    // Soft sky + ground gradient
+    const sky = ctx.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, '#dbeafe');
+    sky.addColorStop(0.35, '#ecfdf5');
+    sky.addColorStop(1, '#dcfce7');
+    ctx.fillStyle = sky;
     ctx.fillRect(0, 0, w, h);
 
-    if (viewMode === '3d' && !hasSatellite) {
-      const sky = ctx.createLinearGradient(0, 0, 0, h * 0.42);
-      sky.addColorStop(0, '#dbeafe');
-      sky.addColorStop(1, '#e8f4ee');
-      ctx.fillStyle = sky;
-      ctx.fillRect(0, 0, w, h * 0.42);
-    }
+    // 3D Terrain mesh
+    const span = 640;
+    const step = 64;
+    const maxAlt = Math.max(10, elevationBounds.maxM);
+    const quads: Array<{
+      pts: Array<{ sx: number; sy: number }>;
+      depth: number;
+      fill: string;
+      stroke: string;
+    }> = [];
 
-    // Chão plano base (ou satélite 5x5)
-    if (hasSatellite) {
-      const zoom = 15;
-      const centerTile = lonLatToTileXY(originLon, originLat, zoom);
-      const tx0 = Math.floor(centerTile.x);
-      const ty0 = Math.floor(centerTile.y);
-      const cache = tileCacheRef.current;
-      const metersPerTile = (40075016.686 * Math.cos((originLat * Math.PI) / 180)) / Math.pow(2, zoom);
-      const fracX = centerTile.x - tx0;
-      const fracY = centerTile.y - ty0;
+    for (let x = -span; x < span; x += step) {
+      for (let y = -span; y < span; y += step) {
+        const z00 = getTerrainElevationM(x, y, slopePct, profile.id);
+        const z10 = getTerrainElevationM(x + step, y, slopePct, profile.id);
+        const z11 = getTerrainElevationM(x + step, y + step, slopePct, profile.id);
+        const z01 = getTerrainElevationM(x, y + step, slopePct, profile.id);
 
-      for (let dx = -2; dx <= 2; dx++) {
-        for (let dy = -2; dy <= 2; dy++) {
-          const entry = cache.get(`${zoom}/${tx0 + dx}/${ty0 + dy}`);
-          if (!entry || entry === 'blocked') continue;
+        const p00 = project3D(x, y, z00, w, h);
+        const p10 = project3D(x + step, y, z10, w, h);
+        const p11 = project3D(x + step, y + step, z11, w, h);
+        const p01 = project3D(x, y + step, z01, w, h);
 
-          const leftM = (dx - fracX) * metersPerTile;
-          const rightM = (dx + 1 - fracX) * metersPerTile;
-          const topM = (fracY - dy) * metersPerTile;
-          const bottomM = (fracY - (dy + 1)) * metersPerTile;
+        const avgZ = (z00 + z10 + z11 + z01) / 4;
+        const normH = Math.min(1, Math.max(0, avgZ / maxAlt));
+        const dzdx = (z10 - z00 + z11 - z01) / (2 * step);
+        const dzdy = (z01 - z00 + z11 - z10) / (2 * step);
+        const shade = Math.max(-0.35, Math.min(0.35, (-dzdx * 0.7 + dzdy * 0.7) * 1.4));
 
-          const tl = projectPoint(leftM, topM, 0, w, h);
-          const tr = projectPoint(rightM, topM, 0, w, h);
-          const bl = projectPoint(leftM, bottomM, 0, w, h);
+        const baseR = profile.id === 'oeste' ? 218 : 138;
+        const baseG = profile.id === 'oeste' ? 215 : 210;
+        const baseB = profile.id === 'oeste' ? 145 : 146;
+        const r = Math.round(Math.min(248, Math.max(75, baseR + normH * 56 + shade * 60)));
+        const g = Math.round(Math.min(245, Math.max(115, baseG + normH * 22 + shade * 55)));
+        const b = Math.round(Math.min(205, Math.max(70, baseB - normH * 24 + shade * 35)));
 
-          ctx.save();
-          const a = (tr.sx - tl.sx) / entry.width;
-          const b = (tr.sy - tl.sy) / entry.width;
-          const c = (bl.sx - tl.sx) / entry.height;
-          const d = (bl.sy - tl.sy) / entry.height;
-          ctx.setTransform(dpr * a, dpr * b, dpr * c, dpr * d, dpr * tl.sx, dpr * tl.sy);
-          ctx.drawImage(entry, -0.5, -0.5, entry.width + 1, entry.height + 1);
-          ctx.restore();
-        }
+        quads.push({
+          pts: [p00, p10, p11, p01],
+          depth: (p00.ryRot + p10.ryRot + p11.ryRot + p01.ryRot) / 4,
+          fill: `rgb(${r}, ${g}, ${b})`,
+          stroke: 'rgba(20, 83, 45, 0.14)'
+        });
       }
     }
 
-    // MALHA DE RELEVO 3D (Mares de Morros / Chapadão com algoritmo do pintor!)
-    if (viewMode === '3d' && showRelief3D) {
-      const span = 680;
-      const step = 68;
-      const maxAlt = Math.max(10, elevationBounds.maxM);
-      const quads: Array<{
-        pts: Array<{ sx: number; sy: number }>;
-        depth: number;
-        fill: string;
-        stroke: string;
-      }> = [];
-
-      for (let x = -span; x < span; x += step) {
-        for (let y = -span; y < span; y += step) {
-          const z00 = getTerrainElevationM(x, y, slopePct, profile.id);
-          const z10 = getTerrainElevationM(x + step, y, slopePct, profile.id);
-          const z11 = getTerrainElevationM(x + step, y + step, slopePct, profile.id);
-          const z01 = getTerrainElevationM(x, y + step, slopePct, profile.id);
-
-          const p00 = projectPoint(x, y, z00, w, h);
-          const p10 = projectPoint(x + step, y, z10, w, h);
-          const p11 = projectPoint(x + step, y + step, z11, w, h);
-          const p01 = projectPoint(x, y + step, z01, w, h);
-
-          const avgZ = (z00 + z10 + z11 + z01) / 4;
-          const normH = Math.min(1, Math.max(0, avgZ / maxAlt));
-
-          // Iluminação direcional (Sol Noroeste) para destacar morros e vales
-          const dzdx = (z10 - z00 + z11 - z01) / (2 * step);
-          const dzdy = (z01 - z00 + z11 - z10) / (2 * step);
-          const shade = Math.max(-0.35, Math.min(0.35, (-dzdx * 0.7 + dzdy * 0.7) * 1.4));
-
-          let fill: string;
-          let stroke: string;
-          if (hasSatellite) {
-            // Sobreposição topográfica translúcida para enxergar o relevo sem esconder o satélite
-            const lightAlpha = shade > 0 ? 0.08 + shade * 0.25 : 0.12 + Math.abs(shade) * 0.25;
-            fill = shade >= 0 ? `rgba(255, 255, 220, ${lightAlpha.toFixed(2)})` : `rgba(6, 78, 59, ${lightAlpha.toFixed(2)})`;
-            stroke = 'rgba(110, 231, 183, 0.28)';
-          } else {
-            // Hipsometria limpa agro: vale verde escuro úmido -> encosta verde vivo -> crista oliva/dourada
-            const baseR = profile.id === 'oeste' ? 218 : 142;
-            const baseG = profile.id === 'oeste' ? 215 : 210;
-            const baseB = profile.id === 'oeste' ? 145 : 148;
-            const r = Math.round(Math.min(248, Math.max(80, baseR + normH * 58 + shade * 65)));
-            const g = Math.round(Math.min(245, Math.max(120, baseG + normH * 22 + shade * 55)));
-            const b = Math.round(Math.min(210, Math.max(75, baseB - normH * 24 + shade * 35)));
-            fill = `rgb(${r}, ${g}, ${b})`;
-            stroke = 'rgba(20, 83, 45, 0.14)';
-          }
-
-          quads.push({
-            pts: [p00, p10, p11, p01],
-            depth: (p00.ryRot + p10.ryRot + p11.ryRot + p01.ryRot) / 4,
-            fill,
-            stroke
-          });
-        }
-      }
-
-      // Desenha de trás para frente (maior ryRot -> menor ryRot) para oclusão 3D correta
-      quads.sort((a, b) => b.depth - a.depth);
-      for (const q of quads) {
-        ctx.beginPath();
-        ctx.moveTo(q.pts[0].sx, q.pts[0].sy);
-        ctx.lineTo(q.pts[1].sx, q.pts[1].sy);
-        ctx.lineTo(q.pts[2].sx, q.pts[2].sy);
-        ctx.lineTo(q.pts[3].sx, q.pts[3].sy);
-        ctx.closePath();
-        ctx.fillStyle = q.fill;
-        ctx.fill();
-        ctx.strokeStyle = q.stroke;
-        ctx.lineWidth = 0.8;
-        ctx.stroke();
-      }
-    } else if (!hasSatellite) {
-      // Grade topográfica 2D (ou 3D sem relevo)
-      const groundHalfM = 2000;
-      const gCorners = [
-        projectPoint(-groundHalfM, groundHalfM, 0, w, h),
-        projectPoint(groundHalfM, groundHalfM, 0, w, h),
-        projectPoint(groundHalfM, -groundHalfM, 0, w, h),
-        projectPoint(-groundHalfM, -groundHalfM, 0, w, h)
-      ];
+    quads.sort((a, b) => b.depth - a.depth);
+    for (const q of quads) {
       ctx.beginPath();
-      ctx.moveTo(gCorners[0].sx, gCorners[0].sy);
-      gCorners.slice(1).forEach((p) => ctx.lineTo(p.sx, p.sy));
+      ctx.moveTo(q.pts[0].sx, q.pts[0].sy);
+      ctx.lineTo(q.pts[1].sx, q.pts[1].sy);
+      ctx.lineTo(q.pts[2].sx, q.pts[2].sy);
+      ctx.lineTo(q.pts[3].sx, q.pts[3].sy);
       ctx.closePath();
-      ctx.fillStyle = profile.id === 'oeste' ? '#f5f0d6' : '#e6f4ea';
+      ctx.fillStyle = q.fill;
       ctx.fill();
-
-      ctx.strokeStyle = 'rgba(15, 118, 110, 0.10)';
-      ctx.lineWidth = 1;
-      for (let m = -1200; m <= 1200; m += 100) {
-        const a = projectPoint(m, -1200, 0, w, h);
-        const b = projectPoint(m, 1200, 0, w, h);
-        ctx.beginPath();
-        ctx.moveTo(a.sx, a.sy);
-        ctx.lineTo(b.sx, b.sy);
-        ctx.stroke();
-
-        const c = projectPoint(-1200, m, 0, w, h);
-        const d = projectPoint(1200, m, 0, w, h);
-        ctx.beginPath();
-        ctx.moveTo(c.sx, c.sy);
-        ctx.lineTo(d.sx, d.sy);
-        ctx.stroke();
-      }
-    }
-
-    // Rio e Estrada acompanhando a elevação do terreno (apenas no Mapa Limpo)
-    if (!hasSatellite) {
-      ctx.beginPath();
-      const riverPts = [
-        [-640, -390],
-        [-380, -340],
-        [-80, -305],
-        [240, -355],
-        [620, -450]
-      ];
-      riverPts.forEach(([rx, ry], idx) => {
-        const p = projectPoint(rx, ry, reliefZ(rx, ry) + 0.5, w, h);
-        if (idx === 0) ctx.moveTo(p.sx, p.sy);
-        else ctx.lineTo(p.sx, p.sy);
-      });
-      ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = Math.max(4, pixelsPerMeter * 13);
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.stroke();
-
-      ctx.beginPath();
-      const roadPts = [
-        [-640, 90],
-        [-280, 55],
-        [0, 10],
-        [340, 75],
-        [640, 140]
-      ];
-      roadPts.forEach(([rx, ry], idx) => {
-        const p = projectPoint(rx, ry, reliefZ(rx, ry) + 0.5, w, h);
-        if (idx === 0) ctx.moveTo(p.sx, p.sy);
-        else ctx.lineTo(p.sx, p.sy);
-      });
-      ctx.strokeStyle = '#d6d3d1';
-      ctx.lineWidth = Math.max(3, pixelsPerMeter * 7);
+      ctx.strokeStyle = q.stroke;
+      ctx.lineWidth = 0.7;
       ctx.stroke();
     }
 
-    // Setas azuis mostrando o escoamento da água da chuva morro abaixo!
+    // Blue water flow arrows downhill
     if (showRunoffArrows && slopePct >= 2) {
       for (let ax = -360; ax <= 360; ax += 180) {
         for (let ay = -300; ay <= 300; ay += 150) {
           const vec = getTerrainDownhillVector(ax, ay, slopePct, profile.id);
-          const tailZ = reliefZ(ax, ay) + 1.5;
-          const headX = ax + vec.dx * 52;
-          const headY = ay + vec.dy * 52;
-          const headZ = reliefZ(headX, headY) + 1.5;
+          const tailZ = getTerrainElevationM(ax, ay, slopePct, profile.id) + 1.5;
+          const headX = ax + vec.dx * 50;
+          const headY = ay + vec.dy * 50;
+          const headZ = getTerrainElevationM(headX, headY, slopePct, profile.id) + 1.5;
 
-          const p1 = projectPoint(ax, ay, tailZ, w, h);
-          const p2 = projectPoint(headX, headY, headZ, w, h);
+          const p1 = project3D(ax, ay, tailZ, w, h);
+          const p2 = project3D(headX, headY, headZ, w, h);
 
           ctx.beginPath();
           ctx.moveTo(p1.sx, p1.sy);
           ctx.lineTo(p2.sx, p2.sy);
-          ctx.strokeStyle = hasSatellite ? 'rgba(56, 189, 248, 0.9)' : 'rgba(2, 132, 199, 0.72)';
-          ctx.lineWidth = 2.2;
+          ctx.strokeStyle = 'rgba(2, 132, 199, 0.8)';
+          ctx.lineWidth = 2.4;
           ctx.stroke();
 
-          // Ponta da seta
           const ang = Math.atan2(p2.sy - p1.sy, p2.sx - p1.sx);
           ctx.beginPath();
           ctx.moveTo(p2.sx, p2.sy);
           ctx.lineTo(p2.sx - Math.cos(ang - 0.55) * 7, p2.sy - Math.sin(ang - 0.55) * 7);
           ctx.lineTo(p2.sx - Math.cos(ang + 0.55) * 7, p2.sy - Math.sin(ang + 0.55) * 7);
           ctx.closePath();
-          ctx.fillStyle = hasSatellite ? '#38bdf8' : '#0284c7';
+          ctx.fillStyle = '#0284c7';
           ctx.fill();
         }
       }
     }
 
-    // Círculo Azul do Raio da Fazenda acompanhando o relevo
-    ctx.beginPath();
-    for (let i = 0; i <= 72; i++) {
-      const ang = (i / 72) * Math.PI * 2;
-      const rx = Math.cos(ang) * farmRadiusM;
-      const ry = Math.sin(ang) * farmRadiusM;
-      const p = projectPoint(rx, ry, reliefZ(rx, ry) + 0.8, w, h);
-      if (i === 0) ctx.moveTo(p.sx, p.sy);
-      else ctx.lineTo(p.sx, p.sy);
-    }
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(14, 165, 233, 0.08)';
-    ctx.fill();
-    ctx.setLineDash([7, 5]);
-    ctx.strokeStyle = '#0284c7';
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Linha indicativa do raio
-    const centerGround = projectPoint(0, 0, reliefZ(0, 0), w, h);
-    const radiusEdge = projectPoint(farmRadiusM, 0, reliefZ(farmRadiusM, 0), w, h);
-    ctx.beginPath();
-    ctx.moveTo(centerGround.sx, centerGround.sy);
-    ctx.lineTo(radiusEdge.sx, radiusEdge.sy);
-    ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = '#0369a1';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    const midRadX = (centerGround.sx + radiusEdge.sx) / 2;
-    const midRadY = (centerGround.sy + radiusEdge.sy) / 2;
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
-    ctx.fillRect(midRadX - 36, midRadY - 11, 72, 20);
-    ctx.fillStyle = '#0369a1';
-    ctx.font = 'bold 11px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(`Raio ${farmRadiusM} m`, midRadX, midRadY + 3);
-
-    // Açude ilustrativo na baixada (apenas no Mapa Limpo)
-    if (!hasSatellite) {
-      const pondZ = reliefZ(-95, -240) + 0.8;
-      const pondPos = projectPoint(-95, -240, pondZ, w, h);
-      ctx.beginPath();
-      ctx.ellipse(
-        pondPos.sx,
-        pondPos.sy,
-        Math.max(14, pixelsPerMeter * 28),
-        Math.max(8, pixelsPerMeter * (viewMode === '3d' ? 14 : 22)),
-        0,
-        0,
-        Math.PI * 2
-      );
-      ctx.fillStyle = '#0ea5e9';
-      ctx.fill();
-      ctx.strokeStyle = '#0369a1';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.fillStyle = '#0c4a6e';
-      ctx.font = 'bold 10px system-ui, sans-serif';
-      ctx.fillText('Açude (Baixada)', pondPos.sx, pondPos.sy + 18);
-    }
-
-    // Polígono Delimitado da Fazenda seguindo o Relevo 3D!
+    // Farm Polygon Fence in 3D
     const polyLocal = vertices.map((v) => latLonToLocalMeters(v.lat, v.lon, originLat, originLon));
-
-    if (polyLocal.length >= 2) {
-      const groundPts = polyLocal.map((p) => projectPoint(p.x, p.y, reliefZ(p.x, p.y) + 0.5, w, h));
-
-      if (polyLocal.length >= 3) {
-        ctx.beginPath();
-        groundPts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.sx, p.sy) : ctx.lineTo(p.sx, p.sy)));
-        ctx.closePath();
-        ctx.fillStyle = 'rgba(16, 185, 129, 0.20)';
-        ctx.fill();
-
-        if (viewMode === '3d') {
-          const topPts = polyLocal.map((p) => projectPoint(p.x, p.y, reliefZ(p.x, p.y) + 11, w, h));
-          for (let i = 0; i < groundPts.length; i++) {
-            const next = (i + 1) % groundPts.length;
-            ctx.beginPath();
-            ctx.moveTo(groundPts[i].sx, groundPts[i].sy);
-            ctx.lineTo(groundPts[next].sx, groundPts[next].sy);
-            ctx.lineTo(topPts[next].sx, topPts[next].sy);
-            ctx.lineTo(topPts[i].sx, topPts[i].sy);
-            ctx.closePath();
-            ctx.fillStyle = 'rgba(5, 150, 105, 0.25)';
-            ctx.fill();
-            ctx.strokeStyle = '#047857';
-            ctx.lineWidth = 1.4;
-            ctx.stroke();
-          }
-
-          if (!hasSatellite) {
-            const cLocal = latLonToLocalMeters(geometry.centroid.lat, geometry.centroid.lon, originLat, originLon);
-            const treeOffsets = [
-              [-55, 35],
-              [-15, 55],
-              [45, 40],
-              [75, -15],
-              [-45, -35],
-              [25, -45]
-            ];
-            treeOffsets.forEach(([ox, oy]) => {
-              const tx = cLocal.x + ox;
-              const ty = cLocal.y + oy;
-              const tz = reliefZ(tx, ty);
-              const base = projectPoint(tx, ty, tz, w, h);
-              const top = projectPoint(tx, ty, tz + 9, w, h);
-              ctx.beginPath();
-              ctx.moveTo(base.sx, base.sy);
-              ctx.lineTo(top.sx, top.sy);
-              ctx.strokeStyle = '#78350f';
-              ctx.lineWidth = 2.5;
-              ctx.stroke();
-              ctx.beginPath();
-              ctx.arc(top.sx, top.sy, Math.max(5, pixelsPerMeter * 8.5), 0, Math.PI * 2);
-              ctx.fillStyle = profile.id === 'oeste' ? '#65a30d' : '#15803d';
-              ctx.fill();
-            });
-          }
-        }
-      }
-
-      ctx.beginPath();
-      groundPts.forEach((p, idx) => (idx === 0 ? ctx.moveTo(p.sx, p.sy) : ctx.lineTo(p.sx, p.sy)));
-      if (polyLocal.length >= 3) ctx.closePath();
-      ctx.strokeStyle = '#047857';
-      ctx.lineWidth = 3;
-      ctx.stroke();
-
-      for (let i = 0; i < (polyLocal.length >= 3 ? polyLocal.length : polyLocal.length - 1); i++) {
-        const j = (i + 1) % polyLocal.length;
-        const distM = Math.round(Math.hypot(polyLocal[j].x - polyLocal[i].x, polyLocal[j].y - polyLocal[i].y));
-        const mx = (groundPts[i].sx + groundPts[j].sx) / 2;
-        const my = (groundPts[i].sy + groundPts[j].sy) / 2;
-        if (distM > 20) {
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
-          ctx.fillRect(mx - 22, my - 9, 44, 16);
-          ctx.fillStyle = '#065f46';
-          ctx.font = 'bold 10px system-ui, sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText(`${distM}m`, mx, my + 3);
-        }
-      }
-    }
-
-    // Marcadores de altitude do relevo em 3D (Topo do morro vs Baixada)
-    if (viewMode === '3d' && showRelief3D) {
-      const highP = projectPoint(
-        elevationBounds.maxPt.x,
-        elevationBounds.maxPt.y,
-        reliefZ(elevationBounds.maxPt.x, elevationBounds.maxPt.y) + 3,
-        w,
-        h
+    if (polyLocal.length >= 3) {
+      const groundPts = polyLocal.map((p) =>
+        project3D(p.x, p.y, getTerrainElevationM(p.x, p.y, slopePct, profile.id) + 0.8, w, h)
       );
-      ctx.fillStyle = 'rgba(120, 53, 15, 0.9)';
-      ctx.fillRect(highP.sx - 40, highP.sy - 18, 80, 17);
-      ctx.fillStyle = '#fef3c7';
-      ctx.font = 'bold 10px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(`Topo +${elevationBounds.maxM}m`, highP.sx, highP.sy - 6);
+      const topPts = polyLocal.map((p) =>
+        project3D(p.x, p.y, getTerrainElevationM(p.x, p.y, slopePct, profile.id) + 10, w, h)
+      );
+
+      for (let i = 0; i < groundPts.length; i++) {
+        const next = (i + 1) % groundPts.length;
+        ctx.beginPath();
+        ctx.moveTo(groundPts[i].sx, groundPts[i].sy);
+        ctx.lineTo(groundPts[next].sx, groundPts[next].sy);
+        ctx.lineTo(topPts[next].sx, topPts[next].sy);
+        ctx.lineTo(topPts[i].sx, topPts[i].sy);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.25)';
+        ctx.fill();
+        ctx.strokeStyle = '#047857';
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+      }
     }
 
-    // Vértices Numerados
-    polyLocal.forEach((p, idx) => {
-      const sp = projectPoint(p.x, p.y, reliefZ(p.x, p.y) + 0.5, w, h);
-      ctx.beginPath();
-      ctx.arc(sp.sx, sp.sy, 9, 0, Math.PI * 2);
-      ctx.fillStyle = '#f59e0b';
-      ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-      ctx.fillStyle = '#0f172a';
-      ctx.font = 'bold 9px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(`${idx + 1}`, sp.sx, sp.sy + 3);
-    });
-
-    // Casa / Sede da Fazenda em cima do relevo
-    const sedeZ = reliefZ(0, 0);
-    const sedeGround = projectPoint(0, 0, sedeZ, w, h);
-    if (viewMode === '3d') {
-      const sTop = projectPoint(0, 0, sedeZ + 11, w, h);
-      ctx.fillStyle = '#b45309';
-      ctx.fillRect(sedeGround.sx - 12, sTop.sy, 24, sedeGround.sy - sTop.sy + 4);
-      ctx.beginPath();
-      ctx.moveTo(sedeGround.sx - 16, sTop.sy);
-      ctx.lineTo(sedeGround.sx, sTop.sy - 11);
-      ctx.lineTo(sedeGround.sx + 16, sTop.sy);
-      ctx.closePath();
-      ctx.fillStyle = '#dc2626';
-      ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    } else {
-      ctx.beginPath();
-      ctx.arc(sedeGround.sx, sedeGround.sy, 10, 0, Math.PI * 2);
-      ctx.fillStyle = '#e11d48';
-      ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-    }
-
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
-    ctx.fillRect(sedeGround.sx - 44, sedeGround.sy + 10, 88, 19);
-    ctx.fillStyle = '#ffffff';
+    // High point altitude tag
+    const highP = project3D(
+      elevationBounds.maxPt.x,
+      elevationBounds.maxPt.y,
+      getTerrainElevationM(elevationBounds.maxPt.x, elevationBounds.maxPt.y, slopePct, profile.id) + 5,
+      w,
+      h
+    );
+    ctx.fillStyle = 'rgba(120, 53, 15, 0.9)';
+    ctx.fillRect(highP.sx - 42, highP.sy - 16, 84, 18);
+    ctx.fillStyle = '#fef3c7';
     ctx.font = 'bold 10px system-ui, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Sede (Arraste)', sedeGround.sx, sedeGround.sy + 23);
+    ctx.fillText(`Topo +${elevationBounds.maxM}m`, highP.sx, highP.sy - 4);
 
-    // Rosa dos ventos
-    const compassX = 34;
-    const compassY = 34;
+    // Sede Marker in 3D
+    const sz = getTerrainElevationM(0, 0, slopePct, profile.id);
+    const sg = project3D(0, 0, sz, w, h);
+    const st = project3D(0, 0, sz + 11, w, h);
+    ctx.fillStyle = '#b45309';
+    ctx.fillRect(sg.sx - 10, st.sy, 20, sg.sy - st.sy + 3);
     ctx.beginPath();
-    ctx.arc(compassX, compassY, 18, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
-    ctx.fill();
-    ctx.strokeStyle = '#cbd5e1';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    const northRad = (viewMode === '3d' ? bearingDeg : 0) * (Math.PI / 180);
+    ctx.moveTo(sg.sx - 14, st.sy);
+    ctx.lineTo(sg.sx, st.sy - 10);
+    ctx.lineTo(sg.sx + 14, st.sy);
+    ctx.closePath();
     ctx.fillStyle = '#dc2626';
-    ctx.font = 'bold 11px system-ui, sans-serif';
-    ctx.fillText('N', compassX - Math.sin(northRad) * 10, compassY - Math.cos(northRad) * 10 + 4);
+    ctx.fill();
 
     ctx.restore();
-  }, [
-    bearingDeg,
-    elevationBounds.maxM,
-    elevationBounds.maxPt.x,
-    elevationBounds.maxPt.y,
-    farmRadiusM,
-    geometry.centroid.lat,
-    geometry.centroid.lon,
-    originLat,
-    originLon,
-    pixelsPerMeter,
-    profile.id,
-    projectPoint,
-    reliefZ,
-    satelliteStatus,
-    showRelief3D,
-    showRunoffArrows,
-    slopePct,
-    vertices,
-    viewMode,
-    visualStyle
-  ]);
+  }, [engineMode, elevationBounds, originLat, originLon, profile.id, project3D, showRunoffArrows, slopePct, vertices]);
 
   useEffect(() => {
-    drawMap();
-  }, [drawMap]);
+    draw3D();
+    window.addEventListener('resize', draw3D);
+    return () => window.removeEventListener('resize', draw3D);
+  }, [draw3D]);
 
-  useEffect(() => {
-    const onResize = () => drawMap();
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [drawMap]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      setPixelsPerMeter((z) => Math.max(0.18, Math.min(2.2, z * factor)));
-    };
-    canvas.addEventListener('wheel', onWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', onWheel);
-  }, []);
-
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const sx = e.clientX - rect.left;
-    const sy = e.clientY - rect.top;
-
-    const polyLocal = vertices.map((v) => latLonToLocalMeters(v.lat, v.lon, originLat, originLon));
-    for (let i = 0; i < polyLocal.length; i++) {
-      const vp = projectPoint(polyLocal[i].x, polyLocal[i].y, reliefZ(polyLocal[i].x, polyLocal[i].y) + 0.5, rect.width, rect.height);
-      if (Math.hypot(sx - vp.sx, sy - vp.sy) <= 15) {
-        dragStateRef.current = {
-          active: true,
-          type: 'vertex',
-          vertexIdx: i,
-          startClientX: e.clientX,
-          startClientY: e.clientY,
-          startPanX: panOffsetM.x,
-          startPanY: panOffsetM.y,
-          moved: false
-        };
-        canvas.setPointerCapture(e.pointerId);
-        return;
-      }
-    }
-
-    const sedePos = projectPoint(0, 0, reliefZ(0, 0), rect.width, rect.height);
-    if (Math.hypot(sx - sedePos.sx, sy - sedePos.sy) <= 18) {
-      dragStateRef.current = {
-        active: true,
-        type: 'sede',
-        vertexIdx: -1,
-        startClientX: e.clientX,
-        startClientY: e.clientY,
-        startPanX: panOffsetM.x,
-        startPanY: panOffsetM.y,
-        moved: false
-      };
-      canvas.setPointerCapture(e.pointerId);
-      return;
-    }
-
-    dragStateRef.current = {
-      active: true,
-      type: 'pan',
-      vertexIdx: -1,
-      startClientX: e.clientX,
-      startClientY: e.clientY,
-      startPanX: panOffsetM.x,
-      startPanY: panOffsetM.y,
-      moved: false
-    };
-    canvas.setPointerCapture(e.pointerId);
-  };
-
-  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const st = dragStateRef.current;
-    if (!st.active) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-
-    const distMoved = Math.hypot(e.clientX - st.startClientX, e.clientY - st.startClientY);
-    if (distMoved > 5) st.moved = true;
-
-    if (st.type === 'vertex' && st.vertexIdx >= 0) {
-      const local = screenToLocalMeters(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
-      const nextPt = localMetersToLatLon(local.mx, local.my, originLat, originLon);
-      const nextVerts = [...vertices];
-      nextVerts[st.vertexIdx] = nextPt;
-      onUpdateProfile({ ...profile, polygonVertices: nextVerts });
-      return;
-    }
-
-    if (st.type === 'pan' && st.moved) {
-      const dScreenX = e.clientX - st.startClientX;
-      const dScreenY = e.clientY - st.startClientY;
-      const tiltMul = viewMode === '3d' ? 1.55 : 1;
-      const rad = -(viewMode === '3d' ? bearingDeg : 0) * (Math.PI / 180);
-      const dmx = -dScreenX / pixelsPerMeter;
-      const dmy = (dScreenY * tiltMul) / pixelsPerMeter;
-      const rotX = dmx * Math.cos(rad) - dmy * Math.sin(rad);
-      const rotY = dmx * Math.sin(rad) + dmy * Math.cos(rad);
-      setPanOffsetM({ x: st.startPanX + rotX, y: st.startPanY + rotY });
+  const recenterLeaflet = (lat: number, lon: number) => {
+    if (leafletMapRef.current) {
+      leafletMapRef.current.setView([lat, lon], 16, { animate: true });
     }
   };
 
-  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const st = dragStateRef.current;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-
-    if (st.type === 'sede' && st.moved) {
-      const local = screenToLocalMeters(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
-      const nextSede = localMetersToLatLon(local.mx, local.my, originLat, originLon);
-      onUpdateProfile({
-        ...profile,
-        latitude: nextSede.lat,
-        longitude: nextSede.lon
-      });
-    } else if (!st.moved && st.type === 'pan' && drawingMode) {
-      const local = screenToLocalMeters(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
-      const nextPt = localMetersToLatLon(local.mx, local.my, originLat, originLon);
-      onUpdateProfile({
-        ...profile,
-        polygonVertices: [...vertices, nextPt]
-      });
+  const handleUseBrowserGps = () => {
+    if (!navigator.geolocation) {
+      setGpsStatus('Navegador sem acesso ao GPS.');
+      return;
     }
-
-    st.active = false;
+    setGpsStatus('Buscando GPS...');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = Number(pos.coords.latitude.toFixed(6));
+        const lon = Number(pos.coords.longitude.toFixed(6));
+        setLatInput(String(lat));
+        setLonInput(String(lon));
+        onUpdateProfile({ ...profile, latitude: lat, longitude: lon });
+        recenterLeaflet(lat, lon);
+        setGpsStatus('Localização aplicada!');
+      },
+      () => setGpsStatus('Permita o GPS ou escolha sua cidade abaixo.')
+    );
   };
 
   const handleApplyCoords = () => {
@@ -971,32 +604,10 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
       return;
     }
-    setPanOffsetM({ x: 0, y: 0 });
-    onUpdateProfile({
-      ...profile,
-      latitude: Number(lat.toFixed(6)),
-      longitude: Number(lon.toFixed(6))
-    });
-  };
-
-  const handleUseBrowserGps = () => {
-    if (!navigator.geolocation) {
-      setGpsStatus('Seu navegador não tem acesso ao GPS.');
-      return;
-    }
-    setGpsStatus('Buscando sua localização...');
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = Number(pos.coords.latitude.toFixed(6));
-        const lon = Number(pos.coords.longitude.toFixed(6));
-        setLatInput(String(lat));
-        setLonInput(String(lon));
-        setPanOffsetM({ x: 0, y: 0 });
-        onUpdateProfile({ ...profile, latitude: lat, longitude: lon });
-        setGpsStatus('Localização encontrada e aplicada!');
-      },
-      () => setGpsStatus('Não foi possível acessar o GPS agora. Use o seletor de cidade.')
-    );
+    const cleanLat = Number(lat.toFixed(6));
+    const cleanLon = Number(lon.toFixed(6));
+    onUpdateProfile({ ...profile, latitude: cleanLat, longitude: cleanLon });
+    recenterLeaflet(cleanLat, cleanLon);
   };
 
   const handleGenerateFromRadius = () => {
@@ -1017,26 +628,19 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
     const newTotalHa = Number(geometry.areaHa.toFixed(2));
     const ratio = profile.totalAreaHa > 0 ? profile.cacaoAreaHa / profile.totalAreaHa : 0.7;
     const newCacaoHa = Number(Math.max(0.5, newTotalHa * ratio).toFixed(2));
-    const newEstimatedPlants = Math.round(newCacaoHa * profile.plantingDensityPerHa);
     onUpdateProfile({
       ...profile,
       totalAreaHa: newTotalHa,
       cacaoAreaHa: newCacaoHa,
-      estimatedPlants: newEstimatedPlants
+      estimatedPlants: Math.round(newCacaoHa * profile.plantingDensityPerHa)
     });
     setSavedNotice(true);
-    setTimeout(() => setSavedNotice(false), 4000);
+    setTimeout(() => setSavedNotice(false), 3500);
   };
 
   const handleUpdateSlope = (nextSlope: number) => {
     const profileType =
-      nextSlope <= 5
-        ? 'plano'
-        : nextSlope <= 12
-        ? 'ondulado'
-        : nextSlope <= 22
-        ? 'morro'
-        : 'escarpado';
+      nextSlope <= 5 ? 'plano' : nextSlope <= 12 ? 'ondulado' : nextSlope <= 22 ? 'morro' : 'escarpado';
     onUpdateProfile({
       ...profile,
       terrainSlopePct: nextSlope,
@@ -1045,146 +649,136 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
   };
 
   return (
-    <div className="space-y-5">
-      {/* Barra de Controles Fáceis do Mapa */}
-      <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-            <MapPin className="w-5 h-5 text-emerald-600" />
-            Mapa 2D / 3D com Relevo da Fazenda
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Alterne para <strong>Vista 3D</strong> para enxergar morros, baixadas e para onde a chuva escorre na sua propriedade.
-          </p>
+    <div className="space-y-4">
+      {/* Compact Header Toolbar */}
+      <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 flex items-center justify-center">
+            <MapPin className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-base font-black text-slate-900 dark:text-white">
+              Mapa da Fazenda
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Marque os cantos da sua roça no mapa real (Leaflet) ou veja o relevo 3D
+            </p>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-xl border border-slate-200 bg-slate-100 p-1 text-xs font-bold">
+          {/* Switch Engine: Leaflet vs 3D Relief */}
+          <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-xs font-bold">
             <button
               type="button"
-              onClick={() => setViewMode('2d')}
-              className={`px-3 py-2 rounded-lg inline-flex items-center gap-1.5 transition-all ${
-                viewMode === '2d' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-700 hover:bg-white'
+              onClick={() => setEngineMode('leaflet')}
+              className={`px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 transition-all ${
+                engineMode === 'leaflet'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-300'
               }`}
             >
-              <MapIcon className="w-4 h-4" />
-              Vista 2D
+              <MapIcon className="w-3.5 h-3.5" />
+              Mapa Real (Leaflet)
             </button>
             <button
               type="button"
-              onClick={() => setViewMode('3d')}
-              className={`px-3 py-2 rounded-lg inline-flex items-center gap-1.5 transition-all ${
-                viewMode === '3d' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-700 hover:bg-white'
+              onClick={() => setEngineMode('relief3d')}
+              className={`px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 transition-all ${
+                engineMode === 'relief3d'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-300'
               }`}
             >
-              <Box className="w-4 h-4" />
-              Vista 3D (Relevo)
-            </button>
-          </div>
-
-          <div className="inline-flex rounded-xl border border-slate-200 bg-slate-100 p-1 text-xs font-bold">
-            <button
-              type="button"
-              onClick={() => setVisualStyle('agro')}
-              className={`px-3 py-2 rounded-lg inline-flex items-center gap-1.5 transition-all ${
-                visualStyle === 'agro' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-600'
-              }`}
-            >
-              <Trees className="w-4 h-4" />
-              Relevo Agro
-            </button>
-            <button
-              type="button"
-              onClick={() => setVisualStyle('satellite')}
-              className={`px-3 py-2 rounded-lg inline-flex items-center gap-1.5 transition-all ${
-                visualStyle === 'satellite' ? 'bg-sky-600 text-white shadow-sm' : 'text-slate-600'
-              }`}
-            >
-              <Satellite className="w-4 h-4" />
-              Satélite
+              <Box className="w-3.5 h-3.5" />
+              Relevo 3D
             </button>
           </div>
 
-          {viewMode === '3d' && (
-            <button
-              type="button"
-              onClick={() => setShowRelief3D((v) => !v)}
-              className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${
-                showRelief3D
-                  ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
-                  : 'bg-white text-slate-600 border-slate-300'
-              }`}
-            >
-              <Mountain className="w-4 h-4 text-emerald-700" />
-              {showRelief3D ? 'Relevo 3D Ativo' : 'Ativar Relevo 3D'}
-            </button>
+          {engineMode === 'leaflet' && (
+            <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setLayerStyle('satellite')}
+                className={`px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 ${
+                  layerStyle === 'satellite'
+                    ? 'bg-white dark:bg-slate-700 text-sky-700 dark:text-sky-300 shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                <Satellite className="w-3.5 h-3.5" />
+                Satélite
+              </button>
+              <button
+                type="button"
+                onClick={() => setLayerStyle('streets')}
+                className={`px-2.5 py-1.5 rounded-lg ${
+                  layerStyle === 'streets'
+                    ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                Ruas
+              </button>
+              <button
+                type="button"
+                onClick={() => setLayerStyle('topo')}
+                className={`px-2.5 py-1.5 rounded-lg ${
+                  layerStyle === 'topo'
+                    ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-300 shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                Relevo
+              </button>
+            </div>
           )}
 
-          <button
-            type="button"
-            onClick={() => setShowRunoffArrows((v) => !v)}
-            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-all ${
-              showRunoffArrows
-                ? 'bg-sky-50 text-sky-900 border-sky-300'
-                : 'bg-white text-slate-600 border-slate-300'
-            }`}
-          >
-            <CloudRain className="w-4 h-4 text-sky-600" />
-            {showRunoffArrows ? 'Fluxo da Chuva' : 'Ver Fluxo Chuva'}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setDrawingMode((v) => !v)}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold border transition-all ${
-              drawingMode
-                ? 'bg-amber-400 text-slate-950 border-amber-500 shadow-sm'
-                : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-            }`}
-          >
-            <Pencil className="w-4 h-4" />
-            {drawingMode ? 'Marcando Pontos' : 'Marcar Limites'}
-          </button>
+          {engineMode === 'leaflet' && (
+            <button
+              type="button"
+              onClick={() => setDrawingMode((v) => !v)}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 border transition-all ${
+                drawingMode
+                  ? 'bg-amber-400 text-slate-950 border-amber-500 shadow-sm'
+                  : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700'
+              }`}
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              {drawingMode ? 'Clicar p/ Marcar Cantos: ON' : 'Marcar Cantos: OFF'}
+            </button>
+          )}
         </div>
       </div>
 
-      {visualStyle === 'satellite' && satelliteStatus === 'fallback' && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-xs text-amber-900 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Info className="w-4 h-4 text-amber-600 shrink-0" />
-            <span>
-              Sem acesso às imagens externas de satélite agora. Exibindo o <strong>Relevo Agro Offline</strong> sem erros.
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setVisualStyle('agro')}
-            className="text-xs font-bold text-amber-950 underline shrink-0"
-          >
-            Usar Relevo Agro
-          </button>
-        </div>
-      )}
-
-      {/* Grid Principal */}
+      {/* Main Split Grid: Map FIRST on Mobile, Controls Left on Desktop */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        <div className="lg:col-span-4 space-y-4">
-          {/* Passo 1: Onde fica a sede */}
-          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm space-y-3 text-xs">
-            <div className="font-bold text-slate-900 flex items-center gap-2 text-sm">
-              <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 font-black flex items-center justify-center text-xs">1</span>
-              Localização da Fazenda
+        {/* Compact Left Control Column (4 cols) */}
+        <div className="lg:col-span-4 order-2 lg:order-1 space-y-4">
+          {/* Card 1: Localização */}
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-3 text-xs">
+            <div className="font-bold text-sm text-slate-900 dark:text-white flex items-center justify-between">
+              <span>1. Onde fica a fazenda</span>
+              <button
+                type="button"
+                onClick={() => setShowManualCoords((v) => !v)}
+                className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline inline-flex items-center gap-1"
+              >
+                <Crosshair className="w-3 h-3" />
+                Coordenadas
+              </button>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={handleUseBrowserGps}
-                className="bg-sky-600 hover:bg-sky-700 text-white font-bold py-2 px-3 rounded-xl inline-flex items-center justify-center gap-1.5 shadow-sm"
+                className="py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold inline-flex items-center justify-center gap-1.5 shadow-sm"
               >
                 <Compass className="w-4 h-4" />
-                Meu GPS
+                Usar Meu GPS
               </button>
+
               <select
                 value=""
                 onChange={(e) => {
@@ -1192,12 +786,12 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
                   if (!found) return;
                   setLatInput(String(found.lat));
                   setLonInput(String(found.lon));
-                  setPanOffsetM({ x: 0, y: 0 });
                   onUpdateProfile({ ...profile, latitude: found.lat, longitude: found.lon });
+                  recenterLeaflet(found.lat, found.lon);
                 }}
-                className="border border-slate-300 rounded-xl px-2.5 py-2 bg-white font-semibold text-slate-700"
+                className="border border-slate-300 dark:border-slate-700 rounded-xl px-2.5 py-2 bg-white dark:bg-slate-800 font-semibold text-slate-800 dark:text-slate-100"
               >
-                <option value="">Cidade BA...</option>
+                <option value="">Escolher cidade...</option>
                 {BAHIA_PRESETS.map((p) => (
                   <option key={p.label} value={p.label}>
                     {p.label}
@@ -1205,157 +799,46 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
                 ))}
               </select>
             </div>
-            {gpsStatus && <p className="text-[11px] text-sky-700 font-semibold">{gpsStatus}</p>}
+            {gpsStatus && <p className="text-[11px] text-sky-600 dark:text-sky-400 font-semibold">{gpsStatus}</p>}
 
-            <button
-              type="button"
-              onClick={() => setShowCoordsHelp((v) => !v)}
-              className="text-xs font-bold text-emerald-700 hover:underline flex items-center gap-1"
-            >
-              <Crosshair className="w-3.5 h-3.5" />
-              {showCoordsHelp ? 'Ocultar Latitude / Longitude' : 'Digitar Latitude / Longitude'}
-            </button>
-
-            {showCoordsHelp && (
-              <div className="pt-2 border-t border-slate-100 space-y-2">
-                <div className="grid grid-cols-2 gap-2">
-                  <input
-                    type="number"
-                    step="0.0001"
-                    value={latInput}
-                    onChange={(e) => setLatInput(e.target.value)}
-                    placeholder="Latitude"
-                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 font-mono"
-                  />
-                  <input
-                    type="number"
-                    step="0.0001"
-                    value={lonInput}
-                    onChange={(e) => setLonInput(e.target.value)}
-                    placeholder="Longitude"
-                    className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 font-mono"
-                  />
-                </div>
+            {showManualCoords && (
+              <div className="pt-2 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-2">
+                <input
+                  type="number"
+                  step="0.0001"
+                  value={latInput}
+                  onChange={(e) => setLatInput(e.target.value)}
+                  className="border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-lg px-2 py-1.5 font-mono text-slate-900 dark:text-white"
+                  placeholder="Lat"
+                />
+                <input
+                  type="number"
+                  step="0.0001"
+                  value={lonInput}
+                  onChange={(e) => setLonInput(e.target.value)}
+                  className="border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-lg px-2 py-1.5 font-mono text-slate-900 dark:text-white"
+                  placeholder="Lon"
+                />
                 <button
                   type="button"
                   onClick={handleApplyCoords}
-                  className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-1.5 px-3 rounded-lg inline-flex items-center justify-center gap-1.5"
+                  className="bg-slate-800 dark:bg-slate-700 text-white font-bold rounded-lg inline-flex items-center justify-center gap-1"
                 >
-                  <Navigation className="w-3.5 h-3.5" />
-                  Ir para Coordenada
+                  <Navigation className="w-3 h-3" /> Ir
                 </button>
               </div>
             )}
           </div>
 
-          {/* Passo 2: Relevo 3D e Influência na Chuva */}
-          <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm space-y-3 text-xs">
-            <div className="font-bold text-slate-900 flex items-center justify-between text-sm">
-              <span className="flex items-center gap-2">
-                <span className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 font-black flex items-center justify-center text-xs">2</span>
-                Relevo e Chuva no Terreno
+          {/* Card 2: Área Marcada & Raio */}
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-3 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-sm text-slate-900 dark:text-white">
+                2. Tamanho e Limites
               </span>
-              <span className="font-mono font-bold text-emerald-700">{slopePct}% declive</span>
-            </div>
-
-            <div className="grid grid-cols-4 gap-1.5">
-              {[
-                { label: 'Plano', val: 3 },
-                { label: 'Ondulado', val: 10 },
-                { label: 'Morro', val: 18 },
-                { label: 'Íngreme', val: 28 }
-              ].map((preset) => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => handleUpdateSlope(preset.val)}
-                  className={`py-1.5 px-1 rounded-lg font-bold border text-[11px] transition-all ${
-                    Math.abs(slopePct - preset.val) <= 3
-                      ? 'bg-emerald-600 text-white border-emerald-600'
-                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
-
-            <input
-              type="range"
-              min={1}
-              max={35}
-              step={1}
-              value={slopePct}
-              onChange={(e) => handleUpdateSlope(Number(e.target.value))}
-              className="w-full accent-emerald-600"
-            />
-
-            {/* Resumo instantâneo de como o relevo afeta a chuva */}
-            <div className="p-3 rounded-xl bg-sky-50 border border-sky-200 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-sky-950">Simular chuva neste relevo:</span>
-                <span className="font-mono font-bold text-sky-800">{sampleRainMm} mm</span>
-              </div>
-              <input
-                type="range"
-                min={10}
-                max={120}
-                step={5}
-                value={sampleRainMm}
-                onChange={(e) => setSampleRainMm(Number(e.target.value))}
-                className="w-full accent-sky-600"
-              />
-
-              {/* Barra Visual Infiltra vs Escorre */}
-              <div className="w-full h-3 rounded-full overflow-hidden flex bg-slate-200">
-                <div
-                  style={{ width: `${reliefRainImpact.infiltrationPct}%` }}
-                  className="bg-emerald-600 h-full"
-                  title={`Infiltra na raiz: ${reliefRainImpact.infiltrationPct}%`}
-                />
-                <div
-                  style={{ width: `${reliefRainImpact.runoffPct}%` }}
-                  className="bg-amber-500 h-full"
-                  title={`Escorre morro abaixo: ${reliefRainImpact.runoffPct}%`}
-                />
-              </div>
-
-              <div className="flex justify-between text-[11px] font-bold">
-                <span className="text-emerald-800">
-                  Entra no solo: {reliefRainImpact.infiltrationPct}% ({reliefRainImpact.infiltratedMm} mm)
-                </span>
-                <span className="text-amber-800">
-                  Escorre: {reliefRainImpact.runoffPct}% ({reliefRainImpact.runoffMm} mm)
-                </span>
-              </div>
-
-              <p className="text-[11px] text-slate-700 leading-snug">
-                Desnível visível no 3D: <strong>{elevationBounds.minM}m (baixada)</strong> até{' '}
-                <strong>{elevationBounds.maxM}m (topo)</strong>. Com {profile.cacaoAreaHa} ha, caixas secas na baixada podem aproveitar{' '}
-                <strong>+{reliefRainImpact.collectibleRunoffM3} m³</strong> dessa enxurrada.
-              </p>
-
-              {onOpenSimulator && (
-                <button
-                  type="button"
-                  onClick={onOpenSimulator}
-                  className="w-full py-1.5 px-2.5 rounded-lg bg-white hover:bg-sky-100 text-sky-900 font-bold border border-sky-300 inline-flex items-center justify-center gap-1"
-                >
-                  <span>Abrir Simulador Completo de Relevo e Chuva</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Passo 3: Raio, Limites e Área Medida */}
-          <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-2xl space-y-3 text-xs">
-            <div className="font-bold text-emerald-950 text-sm flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-black flex items-center justify-center text-xs">3</span>
-                Raio e Área Delimitada
+              <span className="font-mono font-bold text-sky-700 dark:text-sky-400">
+                Raio {farmRadiusM} m
               </span>
-              <span className="font-mono text-sky-800 font-bold">{farmRadiusM} m</span>
             </div>
 
             <input
@@ -1365,160 +848,255 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
               step={20}
               value={farmRadiusM}
               onChange={(e) => onUpdateProfile({ ...profile, farmRadiusM: Number(e.target.value) })}
-              className="w-full accent-sky-600"
+              className="w-full accent-sky-600 cursor-pointer"
             />
 
-            {viewMode === '3d' && (
-              <label className="block space-y-1">
-                <div className="flex justify-between font-semibold text-slate-700">
-                  <span>Girar Relevo 3D</span>
-                  <span className="font-mono">{bearingDeg}°</span>
-                </div>
-                <input
-                  type="range"
-                  min={-180}
-                  max={180}
-                  step={5}
-                  value={bearingDeg}
-                  onChange={(e) => setBearingDeg(Number(e.target.value))}
-                  className="w-full accent-emerald-600"
-                />
-              </label>
-            )}
-
-            <div className="grid grid-cols-3 gap-1.5">
+            <div className="grid grid-cols-3 gap-2">
               <button
                 type="button"
                 onClick={() => onUpdateProfile({ ...profile, polygonVertices: vertices.slice(0, -1) })}
                 disabled={vertices.length === 0}
-                className="border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 text-slate-800 font-bold py-1.5 px-2 rounded-lg inline-flex items-center justify-center gap-1"
+                className="py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 font-bold text-slate-700 dark:text-slate-200 inline-flex items-center justify-center gap-1"
               >
-                <Undo2 className="w-3.5 h-3.5" />
-                Desfazer
+                <Undo2 className="w-3.5 h-3.5" /> Desfazer
               </button>
               <button
                 type="button"
                 onClick={() => onUpdateProfile({ ...profile, polygonVertices: [] })}
                 disabled={vertices.length === 0}
-                className="border border-rose-200 bg-white hover:bg-rose-50 disabled:opacity-40 text-rose-800 font-bold py-1.5 px-2 rounded-lg inline-flex items-center justify-center gap-1"
+                className="py-2 rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50/70 dark:bg-rose-950/40 hover:bg-rose-100 disabled:opacity-40 font-bold text-rose-700 dark:text-rose-300 inline-flex items-center justify-center gap-1"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                Limpar
+                <Trash2 className="w-3.5 h-3.5" /> Limpar
               </button>
               <button
                 type="button"
                 onClick={handleGenerateFromRadius}
-                className="border border-sky-200 bg-white hover:bg-sky-50 text-sky-900 font-bold py-1.5 px-2 rounded-lg inline-flex items-center justify-center gap-1"
+                className="py-2 rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-950/40 hover:bg-sky-100 font-bold text-sky-800 dark:text-sky-300 inline-flex items-center justify-center gap-1"
               >
-                <RotateCcw className="w-3.5 h-3.5" />
-                Do Raio
+                <RotateCcw className="w-3.5 h-3.5" /> Auto
               </button>
             </div>
 
-            <div className="bg-white p-3 rounded-xl border border-emerald-200 flex items-center justify-between">
+            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between">
               <div>
-                <div className="text-slate-500">Área Marcada</div>
-                <div className="text-xl font-black text-emerald-800">{geometry.areaHa.toFixed(2)} ha</div>
+                <div className="text-[11px] font-semibold text-emerald-800 dark:text-emerald-300">
+                  Área Marcada no Mapa
+                </div>
+                <div className="text-2xl font-black text-emerald-900 dark:text-white">
+                  {geometry.areaHa.toFixed(2)} ha
+                </div>
               </div>
-              <div className="text-right">
-                <div className="text-slate-500">Perímetro</div>
-                <div className="text-sm font-bold text-slate-900">{Math.round(geometry.perimeterM)} m</div>
+              <button
+                type="button"
+                onClick={handleApplyDelimitedArea}
+                disabled={geometry.areaHa <= 0.05}
+                className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold inline-flex items-center gap-1.5 shadow-sm"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                Salvar Área
+              </button>
+            </div>
+
+            {savedNotice && (
+              <div className="text-center py-1.5 rounded-lg bg-emerald-600 text-white font-bold">
+                Área salva na sua fazenda!
+              </div>
+            )}
+          </div>
+
+          {/* Card 3: Relevo e Chuva (Compacto) */}
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-3 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-1.5">
+                <Mountain className="w-4 h-4 text-emerald-600" />
+                3. Terreno &amp; Chuva
+              </span>
+              <span className="font-mono font-bold text-emerald-700 dark:text-emerald-400">
+                {slopePct}% declive
+              </span>
+            </div>
+
+            <div className="grid grid-cols-4 gap-1.5">
+              {[
+                { label: 'Plano', val: 3 },
+                { label: 'Leve', val: 10 },
+                { label: 'Morro', val: 18 },
+                { label: 'Forte', val: 28 }
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => handleUpdateSlope(p.val)}
+                  className={`py-1.5 rounded-lg font-bold border text-[11px] transition-all ${
+                    Math.abs(slopePct - p.val) <= 3
+                      ? 'bg-emerald-600 text-white border-emerald-600'
+                      : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="space-y-1.5 pt-1">
+              <div className="w-full h-3 rounded-full overflow-hidden flex bg-slate-200 dark:bg-slate-700">
+                <div
+                  style={{ width: `${reliefRainImpact.infiltrationPct}%` }}
+                  className="bg-emerald-500 h-full transition-all"
+                />
+                <div
+                  style={{ width: `${reliefRainImpact.runoffPct}%` }}
+                  className="bg-amber-500 h-full transition-all"
+                />
+              </div>
+              <div className="flex justify-between text-[11px] font-bold">
+                <span className="text-emerald-700 dark:text-emerald-400">
+                  Solo absorve: {reliefRainImpact.infiltrationPct}%
+                </span>
+                <span className="text-amber-700 dark:text-amber-400">
+                  Escorre: {reliefRainImpact.runoffPct}%
+                </span>
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={handleApplyDelimitedArea}
-              disabled={geometry.areaHa <= 0.05}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold py-2.5 px-4 rounded-xl inline-flex items-center justify-center gap-2 shadow-sm text-xs transition-all"
-            >
-              <CheckCircle2 className="w-4 h-4" />
-              Salvar Área na Minha Fazenda
-            </button>
-
-            {savedNotice && (
-              <div className="p-2 rounded-lg bg-emerald-600 text-white font-bold text-center">
-                Área de {geometry.areaHa.toFixed(2)} ha salva!
-              </div>
+            {onOpenSimulator && (
+              <button
+                type="button"
+                onClick={onOpenSimulator}
+                className="w-full py-2 rounded-xl bg-sky-50 dark:bg-sky-950/50 hover:bg-sky-100 dark:hover:bg-sky-900/60 text-sky-800 dark:text-sky-300 font-bold border border-sky-200 dark:border-sky-800 inline-flex items-center justify-center gap-1"
+              >
+                <span>Ver Detalhes em Seca e Chuva</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
             )}
-
-            <p className="text-[11px] text-emerald-900 flex items-center gap-1">
-              <Maximize2 className="w-3.5 h-3.5 shrink-0" />
-              <span>Cadastro atual: <strong>{profile.totalAreaHa} ha</strong> ({profile.cacaoAreaHa} ha cacau).</span>
-            </p>
           </div>
         </div>
 
-        {/* Canvas Interativo 2D/3D */}
-        <div className="lg:col-span-8">
-          <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden flex flex-col">
-            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 text-xs flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-3 font-medium text-slate-700">
+        {/* Right Map Viewport (8 cols) */}
+        <div className="lg:col-span-8 order-1 lg:order-2">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col">
+            <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-3 font-semibold text-slate-700 dark:text-slate-300">
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-rose-600" />
-                  Sede
+                  <span className="w-3 h-3 rounded-full bg-rose-600" /> Sede (Arraste)
                 </span>
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-sky-500" />
-                  Raio {farmRadiusM} m
+                  <span className="w-3 h-3 rounded-full bg-amber-400 border border-slate-400" /> Cantos ({vertices.length})
                 </span>
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-emerald-600" />
-                  Desnível {elevationBounds.diffM} m ({slopePct}%)
-                </span>
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-amber-500" />
-                  {vertices.length} cantos
+                  <span className="w-3 h-3 rounded-full bg-emerald-500" /> {geometry.areaHa.toFixed(2)} ha
                 </span>
               </div>
 
-              <div className="flex items-center gap-1.5">
+              {engineMode === 'relief3d' ? (
+                <div className="flex items-center gap-2">
+                  <ToggleSwitch
+                    size="sm"
+                    checked={showRunoffArrows}
+                    onChange={setShowRunoffArrows}
+                    activeColor="sky"
+                    label="Setas da Chuva"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setPixelsPerMeter((z) => Math.min(1.6, z * 1.15))}
+                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                    title="Zoom +"
+                  >
+                    <ZoomIn className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPixelsPerMeter((z) => Math.max(0.22, z / 1.15))}
+                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                    title="Zoom -"
+                  >
+                    <ZoomOut className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ) : (
                 <button
                   type="button"
-                  onClick={() => setPixelsPerMeter((z) => Math.min(2.2, z * 1.2))}
-                  title="Aproximar Zoom"
-                  className="p-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700"
+                  onClick={() => recenterLeaflet(originLat, originLon)}
+                  className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold hover:bg-slate-100"
                 >
-                  <ZoomIn className="w-4 h-4" />
+                  Centralizar na Sede
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setPixelsPerMeter((z) => Math.max(0.18, z / 1.2))}
-                  title="Afastar Zoom"
-                  className="p-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700"
-                >
-                  <ZoomOut className="w-4 h-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPanOffsetM({ x: 0, y: 0 });
-                    setPixelsPerMeter(0.55);
+              )}
+            </div>
+
+            {engineMode === 'leaflet' ? (
+              <div className="relative h-[340px] sm:h-[440px] lg:h-[530px] mobile-map-box w-full">
+                <div ref={leafletContainerRef} className="w-full h-full" />
+
+                {tileOfflineWarning && (
+                  <div className="pointer-events-none absolute top-3 right-3 z-[400] bg-amber-900/90 text-white px-3 py-1.5 rounded-xl text-[11px] font-bold shadow">
+                    Sem internet: você ainda pode marcar os pontos normalmente
+                  </div>
+                )}
+
+                <div className="pointer-events-none absolute bottom-3 left-3 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200 shadow-sm">
+                  {drawingMode
+                    ? 'Clique no mapa para marcar novos cantos • Arraste as bolinhas amarelas para ajustar'
+                    : 'Arraste para mover o mapa • Ative "Clicar p/ Marcar Cantos" para desenhar a área'}
+                </div>
+              </div>
+            ) : (
+              <div className="relative h-[340px] sm:h-[440px] lg:h-[530px] mobile-map-box w-full">
+                <canvas
+                  ref={canvas3DRef}
+                  onPointerDown={(e) => {
+                    drag3DRef.current = {
+                      active: true,
+                      startClientX: e.clientX,
+                      startClientY: e.clientY,
+                      startPanX: panOffsetM.x,
+                      startPanY: panOffsetM.y
+                    };
                   }}
-                  className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold"
-                >
-                  Centralizar
-                </button>
-              </div>
-            </div>
+                  onPointerMove={(e) => {
+                    if (!drag3DRef.current.active) return;
+                    const dx = e.clientX - drag3DRef.current.startClientX;
+                    const dy = e.clientY - drag3DRef.current.startClientY;
+                    const rad = -bearingDeg * (Math.PI / 180);
+                    const mx = -dx / pixelsPerMeter;
+                    const my = (dy * 1.55) / pixelsPerMeter;
+                    setPanOffsetM({
+                      x: drag3DRef.current.startPanX + mx * Math.cos(rad) - my * Math.sin(rad),
+                      y: drag3DRef.current.startPanY + mx * Math.sin(rad) + my * Math.cos(rad)
+                    });
+                  }}
+                  onPointerUp={() => {
+                    drag3DRef.current.active = false;
+                  }}
+                  onPointerCancel={() => {
+                    drag3DRef.current.active = false;
+                  }}
+                  className="w-full h-full block touch-none cursor-grab active:cursor-grabbing"
+                />
 
-            <div className="relative">
-              <canvas
-                ref={canvasRef}
-                onPointerDown={handlePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerUp={handlePointerUp}
-                className={`w-full h-[560px] block touch-none ${
-                  drawingMode ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'
-                }`}
-              />
-
-              <div className="pointer-events-none absolute bottom-3 left-3 bg-white/90 backdrop-blur-sm border border-slate-200 rounded-xl px-3 py-1.5 text-[11px] font-semibold text-slate-700 shadow-sm">
-                {drawingMode
-                  ? 'Clique no terreno para marcar os cantos • Setas azuis indicam descida da chuva'
-                  : 'Arraste para mover • Role para zoom • Use "Girar Relevo 3D" para ver os morros'}
+                <div className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs shadow-sm">
+                  <div className="flex items-center gap-2 font-bold text-slate-700 dark:text-slate-200">
+                    <CloudRain className="w-4 h-4 text-sky-600" />
+                    <span>
+                      Desnível de {elevationBounds.diffM} m ({slopePct}%) • Setas mostram para onde a chuva desce
+                    </span>
+                  </div>
+                  <label className="flex items-center gap-2 font-bold text-slate-700 dark:text-slate-200">
+                    <span>Girar 3D:</span>
+                    <input
+                      type="range"
+                      min={-180}
+                      max={180}
+                      step={5}
+                      value={bearingDeg}
+                      onChange={(e) => setBearingDeg(Number(e.target.value))}
+                      className="w-28 accent-emerald-600"
+                    />
+                  </label>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       </div>

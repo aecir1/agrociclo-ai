@@ -7,11 +7,11 @@ Para o histórico detalhado da conversa e evolução passo a passo das funcional
 ---
 
 ## 1. Visão Geral do Projeto (`AgroCiclo AI`)
-* **Objetivo:** Plataforma AgTech de **Gestão Hídrica, Mapeamento 2D/3D com Relevo, Automação de Gotejamento de Baixo Custo e Regularidade Ambiental** focada na cacauicultura da Bahia (**Ilhéus / Sul da Bahia** vs. **Oeste Baiano / Cerrado**).
+* **Objetivo:** Plataforma AgTech de **Gestão Hídrica, Mapa Leaflet + Relevo 3D, Automação de Gotejamento de Baixo Custo, Diagnóstico Visual da Folha e Regularidade Ambiental** focada na cacauicultura da Bahia (**Ilhéus / Sul da Bahia** vs. **Oeste Baiano / Cerrado**).
 * **Público-Alvo e Diretriz de UX/UI:**
-  * Pequenos e médios produtores rurais (muitas vezes com pouca familiaridade tecnológica).
-  * **Design inspirado em Dashboard Moderno (Figma / Dealport):** Fundo claro suave (`#F5F7F6`), barra lateral branca fixa com item ativo em verde-esmeralda (`bg-emerald-600`), topo limpo com os botões mais usados sempre visíveis (**Abrir Mapa 2D/3D**, **Como Usar (Tutorial)**, **+ Cadastrar Fazenda**).
-  * **Divulgação Progressiva (Menos informação de imediato, extras sob demanda):** A tela inicial mostra apenas 4 botões grandes de Ações Rápidas, 3 cartões de KPI em linguagem direta, gráfico limpo de duração da água em 30 dias e 2 avisos práticos do dia. Dados densos (Previsão 24h/7d, comparativo agronômico Sul vs. Oeste e detalhes técnicos INEMA/LoRa/Assoreamento) ficam recolhidos na parte inferior e abrem com 1 clique quando necessário.
+  * Pequenos e médios produtores rurais (muitas vezes com pouca familiaridade tecnológica), com interface limpa sem poluição visual e alternância entre **Tema Claro (`#EDF3EE` suave)** e **Tema Escuro (`#0B1120`)**.
+  * **Tela Inicial Limpa e Intuitiva:** Caixa d’água visual com dias de autonomia no gotejamento vs. rega comum, cartão verde de Clima Agora com **Switch no topo** para abrir a previsão em **blocos de 3 horas** e **7 dias** sem rolar a tela, e 4 botões grandes de Ações Rápidas.
+  * **Sem Chat de IA:** O módulo de chat/API de IA foi removido por feedback de produtores e mentores, mantendo a experiência direta e focada em decisões práticas na roça.
 
 ---
 
@@ -28,29 +28,15 @@ Para o histórico detalhado da conversa e evolução passo a passo das funcional
 ---
 
 ## 3. Arquitetura e Módulos Implementados (`src/`)
-* `src/App.tsx`: Layout estilo Figma com barra lateral esquerda (`O que você mais usa` vs. `Ferramentas Extras`), seletor rápido **Ilhéus** vs. **Oeste**, topbar clara e painel inicial simplificado com seções expansíveis sob demanda.
+* `src/App.tsx` + `src/components/ToggleSwitch.tsx`: Shell com barra lateral, alternância **Ilhéus** vs. **Oeste**, botão de **Modo Claro / Escuro**, Caixa d’Água visual de autonomia e **Switch** direto no card climático para expandir a previsão (`CityWeatherForecast.tsx` agrupada em turnos de 3h + semana).
 * `src/components/FarmMap2D3D.tsx` + `src/utils/geoMap.ts`:
-  * **Mapa Interativo 2D e 3D com Relevo Real (100% funcional offline e em `file://`):**
-    * Motor próprio em HTML5 Canvas isométrico sem depender de bibliotecas externas que bloqueiem em `file://` ou navegadores com bloqueio de rastreamento (Brave).
-    * **Modo Relevo Agro (Offline)** e **Modo Satélite (Online via Esri World Imagery validado via CORS com fallback automático sem erro na tela)**.
-    * **Malha Topográfica 3D Sombreada:** Quando em **Vista 3D (Relevo)**, renderiza morros, encostas e baixadas com iluminação direcional, altitude máxima/mínima (`Topo +XXm`), cerca extrudada acompanhando o relevo e **setas azuis indicando o sentido de descida da água da chuva**.
-    * **Delimitação e GPS:** Botão de GPS do navegador, atalhos de municípios da Bahia, entrada de Latitude/Longitude, ajuste do **Raio da Fazenda (m)**, marcação manual clicando nos cantos da propriedade (ou arrastando os vértices/Sede) e botão **Salvar Área na Minha Fazenda** que atualiza os hectares automaticamente.
-    * **Cálculo Relevo × Chuva no Mapa:** Simulador rápido acoplado mostrando quanto da chuva infiltra no solo vs. escorre morro abaixo conforme a declividade (`1%` a `35%`).
-* `src/components/AutomationTab.tsx`:
-  * **Controle de Gotejamento "Sensor-Lite" & Particionamento de Talhões:**
-    * Botão **`+ Novo Talhão / Dividir Hectares`**: permite criar novas partições escolhendo nome, hectares, posição no relevo (*Baixada / Várzea*, *Meia Encosta*, *Topo de Morro*), clone e estágio fenológico, com opção de descontar automaticamente os hectares do maior talhão existente.
-    * Botões rápidos em cada talhão: **`Dividir em 2`** (divide o talhão em Parte A e Parte B com plantas e vazões proporcionais), ajuste **`−` / `+` 0,5 ha**, exclusão de partição, diagnóstico de entupimento (*Flushing*) e rompimento de mangueira.
-* `src/components/DroughtSimulatorTab.tsx`:
-  * **Simulador de Seca (15, 30, 60 e 90 dias)** + **Calculadora de Captação em Telhados de Barcaças** + **Auditoria de Assoreamento**.
-  * **Seção 3 — Hidrologia de Encosta & Influência do Relevo na Chuva:** Calcula em tempo real (sincronizado com a declividade do Mapa 3D) a fração da chuva que **infiltra na raiz (`%`, `mm`, `m³/ha`)** vs. **escorre em enxurrada (`%`, `mm`, `m³/ha`)**, o volume **aproveitável por gravidade em Caixas Secas / Açude Baixo** e o **Risco de Erosão / Assoreamento** (*Baixo*, *Moderado*, *Alto*).
-* `src/components/InteractiveTutorialModal.tsx`:
-  * **Tutorial Guiado em 6 Passos** com barra de progresso interativa, instruções passo a passo em linguagem acessível para o produtor, botões de ação direta para abrir cada tela e aba **Dicionário Simples** explicando termos técnicos sem jargão.
-* `src/components/CameraVisionTab.tsx` + `backend_python/ml_server.py`:
-  * Diagnóstico óptico por foto/câmera para detectar *Estresse Hídrico (Seca)*, *Vassoura-de-Bruxa* ou *Planta Saudável*.
-* `src/components/RegulationCreditTab.tsx`:
-  * Conformidade INEMA / CEFIR, mapa de reúso seguro da água e emissão de Relatório Técnico para crédito rural (FNE Verde / FNE Água).
-* `src/components/PropertyAndAiTab.tsx`:
-  * Plano de Emergência Hídrica (Antes, Durante e Após a seca), edição completa do cadastro e assistente **AgroAssist**.
+  * **Mapa Real com Leaflet** (Satélite, Ruas, Relevo Topo, pin da Sede arrastável, polígono clicável/editável com marcadores `L.divIcon`) **+ Vista 3D de Relevo** em Canvas isométrico com setas de escoamento da chuva e cálculo de declividade (`1%` a `35%`).
+* `src/components/AutomationTab.tsx`: Cartões clicáveis com `ToggleSwitch` reais para as travas de proteção (`Trava Anti-Vassoura`, `Tarifa Verde Noturna`, `Modo Economia`, `Offline`) e controle direto por talhão (`Ligar Rega Agora` / `Pausar Rega`, `+ Novo Talhão`, `Dividir em 2`).
+* `src/components/DroughtSimulatorTab.tsx`: Organizado em duas abas limpas (**`1. Teste de Seca`** e **`2. Chuva & Relevo`**), removendo seletores técnicos confusos e exibindo barras comparativas claras de reserva, captação em telhados e enxurrada em encosta.
+* `src/components/CameraVisionTab.tsx` + `backend_python/ml_server.py`: Diagnóstico visual da folha com persistência da foto enviada, **contornos tracejados** sobre as regiões afetadas (switch `Contornar sinais na foto`), alerta destacado de **Vassoura-de-Bruxa**, probabilidades amplas e switch lateral para detalhes técnicos opcionais.
+* `src/components/RegulationCreditTab.tsx`: Explicação visual em 3 passos (Economia de Água → INEMA → Banco do Nordeste FNE Verde/Água), emissão de Comprovante PDF e detalhes extras de reúso/solo recolhidos em switch.
+* `src/components/PropertyAndEmergencyTab.tsx`: Checklist de contingência da seca (Antes/Durante/Depois) + editor dos dados da fazenda.
+* `src/components/InteractiveTutorialModal.tsx` + `src/components/AppTourOverlay.tsx` + `src/components/FarmerSetupWizard.tsx`: Ao concluir o cadastro em **`+ Cadastrar Fazenda`**, o sistema salva a propriedade e inicia automaticamente um **Tour Guiado Interativo em 6 passos** com holofote direto nos elementos da tela.
 * `prototipo_standalone.html`:
   * Versão single-file gerada a partir do `dist/` compilado pelo Vite (pode ser aberta direto com dois cliques no navegador sem precisar rodar servidor).
 
