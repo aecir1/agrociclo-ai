@@ -1,6 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import {
   MapPin,
   Undo2,
@@ -18,7 +20,7 @@ import {
   ArrowRight,
   Crosshair,
   ZoomIn,
-  ZoomOut
+  ZoomOut,
 } from 'lucide-react';
 import { LatLonPoint, PropertyProfile } from '../types';
 import {
@@ -26,7 +28,7 @@ import {
   calculateReliefRainImpact,
   getTerrainDownhillVector,
   getTerrainElevationM,
-  localMetersToLatLon
+  localMetersToLatLon,
 } from '../utils/geoMap';
 import { ToggleSwitch } from './ToggleSwitch';
 
@@ -42,48 +44,147 @@ const BAHIA_PRESETS: Array<{ label: string; lat: number; lon: number }> = [
   { label: 'Uruçuca (Cacau)', lat: -14.5931, lon: -39.2844 },
   { label: 'Camacan', lat: -15.4192, lon: -39.4958 },
   { label: 'Riachão das Neves', lat: -11.7462, lon: -44.9102 },
-  { label: 'Barreiras (Oeste)', lat: -12.1528, lon: -44.9901 }
+  { label: 'Barreiras (Oeste)', lat: -12.1528, lon: -44.9901 },
 ];
 
 type LeafletLayerStyle = 'satellite' | 'streets' | 'topo';
 type MapEngineMode = 'leaflet' | 'relief3d';
 
-const TILE_PROVIDERS: Record<LeafletLayerStyle, { url: string; attribution: string; maxZoom: number }> = {
+const LEAFLET_TILE_PROVIDERS: Record<
+  LeafletLayerStyle,
+  { url: string; attribution: string; maxZoom: number }
+> = {
   satellite: {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles © Esri',
-    maxZoom: 18
+    maxZoom: 18,
   },
   streets: {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     attribution: '© OpenStreetMap',
-    maxZoom: 19
+    maxZoom: 19,
   },
   topo: {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles © Esri Topo',
-    maxZoom: 18
-  }
+    maxZoom: 18,
+  },
 };
 
-function latLonToLocalMeters(
-  lat: number,
-  lon: number,
+const MAPLIBRE_BASE_TILES: Record<
+  LeafletLayerStyle,
+  { tiles: string[]; attribution: string; maxzoom: number }
+> = {
+  satellite: {
+    tiles: [
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    ],
+    attribution: 'Esri World Imagery',
+    maxzoom: 18,
+  },
+  streets: {
+    tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+    attribution: '© OpenStreetMap contributors',
+    maxzoom: 19,
+  },
+  topo: {
+    tiles: [
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+    ],
+    attribution: 'Esri World Topo',
+    maxzoom: 18,
+  },
+};
+
+function makeCircleRing(
+  centerLat: number,
+  centerLon: number,
+  radiusM: number,
+  segments = 24
+): Array<[number, number]> {
+  const pts: Array<[number, number]> = [];
+  for (let i = 0; i <= segments; i++) {
+    const ang = (i / segments) * Math.PI * 2;
+    const p = localMetersToLatLon(
+      Math.cos(ang) * radiusM,
+      Math.sin(ang) * radiusM,
+      centerLat,
+      centerLon
+    );
+    pts.push([p.lon, p.lat]);
+  }
+  return pts;
+}
+
+function makeRectPolygon(
+  dxCenter: number,
+  dyCenter: number,
+  halfW: number,
+  halfH: number,
   originLat: number,
   originLon: number
-): { x: number; y: number } {
-  const latScale = 111320;
-  const lonScale = Math.max(1e-6, 111320 * Math.cos((originLat * Math.PI) / 180));
+): Array<[number, number]> {
+  const corners: Array<[number, number]> = [
+    [dxCenter - halfW, dyCenter - halfH],
+    [dxCenter + halfW, dyCenter - halfH],
+    [dxCenter + halfW, dyCenter + halfH],
+    [dxCenter - halfW, dyCenter + halfH],
+    [dxCenter - halfW, dyCenter - halfH],
+  ];
+  return corners.map(([dx, dy]) => {
+    const p = localMetersToLatLon(dx, dy, originLat, originLon);
+    return [p.lon, p.lat];
+  });
+}
+
+function build3DStyle(layerStyle: LeafletLayerStyle): maplibregl.StyleSpecification {
+  const baseCfg = MAPLIBRE_BASE_TILES[layerStyle];
   return {
-    x: (lon - originLon) * lonScale,
-    y: (lat - originLat) * latScale
+    version: 8,
+    sources: {
+      'base-raster': {
+        type: 'raster',
+        tiles: baseCfg.tiles,
+        tileSize: 256,
+        maxzoom: baseCfg.maxzoom,
+        attribution: baseCfg.attribution,
+      },
+      'terrain-dem': {
+        type: 'raster-dem',
+        tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        maxzoom: 15,
+        encoding: 'terrarium',
+      },
+    },
+    layers: [
+      {
+        id: 'base-raster-layer',
+        type: 'raster',
+        source: 'base-raster',
+        paint: {
+          'raster-opacity': 1,
+        },
+      },
+      {
+        id: 'terrain-hillshade',
+        type: 'hillshade',
+        source: 'terrain-dem',
+        paint: {
+          'hillshade-exaggeration': 0.35,
+          'hillshade-shadow-color': '#0f172a',
+          'hillshade-highlight-color': '#fefce8',
+          'hillshade-accent-color': '#059669',
+        },
+      },
+    ],
   };
 }
 
 export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
   profile,
   onUpdateProfile,
-  onOpenSimulator
+  onOpenSimulator,
 }) => {
   const originLat = profile.latitude ?? (profile.id === 'oeste' ? -11.7462 : -14.7565);
   const originLon = profile.longitude ?? (profile.id === 'oeste' ? -44.9102 : -39.2245);
@@ -102,10 +203,14 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
   const [savedNotice, setSavedNotice] = useState<boolean>(false);
   const [tileOfflineWarning, setTileOfflineWarning] = useState<boolean>(false);
 
-  // 3D canvas states
-  const [bearingDeg, setBearingDeg] = useState<number>(-18);
-  const [pixelsPerMeter, setPixelsPerMeter] = useState<number>(0.52);
-  const [panOffsetM, setPanOffsetM] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  // MapLibre 3D Camera & Relief Exaggeration controls
+  const [bearingDeg, setBearingDeg] = useState<number>(-22);
+  const [pitchDeg, setPitchDeg] = useState<number>(58);
+  const [terrainExag, setTerrainExag] = useState<number>(() =>
+    slopePct <= 6 ? 1.4 : slopePct <= 14 ? 2.1 : 2.8
+  );
+  const [webglError, setWebglError] = useState<string | null>(null);
+  const [mapLibreReady, setMapLibreReady] = useState<boolean>(false);
 
   // Refs for Leaflet map & overlays
   const leafletContainerRef = useRef<HTMLDivElement | null>(null);
@@ -114,7 +219,13 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
   const overlayGroupRef = useRef<L.LayerGroup | null>(null);
   const lastRegionRef = useRef<string>(profile.id);
 
-  // Refs for latest callback values inside Leaflet event handlers
+  // Refs for MapLibre GL JS 4.x WebGL 3D map
+  const maplibreContainerRef = useRef<HTMLDivElement | null>(null);
+  const maplibreMapRef = useRef<maplibregl.Map | null>(null);
+  const maplibreMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const lastRegion3DRef = useRef<string>(profile.id);
+
+  // Refs for latest callback values inside map event handlers
   const profileRef = useRef<PropertyProfile>(profile);
   profileRef.current = profile;
   const drawingModeRef = useRef<boolean>(drawingMode);
@@ -122,20 +233,14 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
   const onUpdateProfileRef = useRef(onUpdateProfile);
   onUpdateProfileRef.current = onUpdateProfile;
 
-  // 3D Canvas refs
-  const canvas3DRef = useRef<HTMLCanvasElement | null>(null);
-  const drag3DRef = useRef<{
-    active: boolean;
-    startClientX: number;
-    startClientY: number;
-    startPanX: number;
-    startPanY: number;
-  }>({ active: false, startClientX: 0, startClientY: 0, startPanX: 0, startPanY: 0 });
-
   useEffect(() => {
     setLatInput(String(originLat));
     setLonInput(String(originLon));
   }, [originLat, originLon]);
+
+  useEffect(() => {
+    setTerrainExag(slopePct <= 6 ? 1.4 : slopePct <= 14 ? 2.1 : slopePct <= 22 ? 2.8 : 3.4);
+  }, [slopePct]);
 
   const geometry = useMemo(
     () => calculateFarmGeometry(originLat, originLon, farmRadiusM, vertices),
@@ -156,7 +261,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
         cacaoAreaHa: profile.cacaoAreaHa,
         hasMulchingOrCabruca: profile.id === 'ilheus',
         hasContourDitches: false,
-        dailyDemandM3
+        dailyDemandM3,
       }),
     [dailyDemandM3, profile.cacaoAreaHa, profile.id, slopePct]
   );
@@ -164,14 +269,10 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
   const elevationBounds = useMemo(() => {
     let minE = Infinity;
     let maxE = -Infinity;
-    let maxPt = { x: 0, y: 0 };
     for (let x = -420; x <= 420; x += 70) {
       for (let y = -420; y <= 420; y += 70) {
         const e = getTerrainElevationM(x, y, slopePct, profile.id);
-        if (e > maxE) {
-          maxE = e;
-          maxPt = { x, y };
-        }
+        if (e > maxE) maxE = e;
         if (e < minE) minE = e;
       }
     }
@@ -179,12 +280,11 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
       minM: Math.round(minE),
       maxM: Math.round(maxE),
       diffM: Math.max(0, Math.round(maxE - minE)),
-      maxPt
     };
   }, [profile.id, slopePct]);
 
   // =========================================================
-  // 1. REAL LEAFLET MAP ENGINE
+  // 1. REAL LEAFLET MAP ENGINE (2D EDITING)
   // =========================================================
   useEffect(() => {
     if (engineMode !== 'leaflet') return;
@@ -194,7 +294,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
     const map = L.map(container, {
       center: [originLat, originLon],
       zoom: 16,
-      zoomControl: true
+      zoomControl: true,
     });
 
     const overlayGroup = L.layerGroup().addTo(map);
@@ -206,15 +306,14 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
       const curr = profileRef.current;
       const nextPt: LatLonPoint = {
         lat: Number(e.latlng.lat.toFixed(6)),
-        lon: Number(e.latlng.lng.toFixed(6))
+        lon: Number(e.latlng.lng.toFixed(6)),
       };
       onUpdateProfileRef.current({
         ...curr,
-        polygonVertices: [...(curr.polygonVertices ?? []), nextPt]
+        polygonVertices: [...(curr.polygonVertices ?? []), nextPt],
       });
     });
 
-    // Keep Leaflet viewport sized accurately on mobile orientation & phone preview transitions
     const resizeObserver =
       typeof ResizeObserver !== 'undefined'
         ? new ResizeObserver(() => {
@@ -237,7 +336,6 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
     };
   }, [engineMode]);
 
-  // Update Leaflet base tile layer cleanly
   useEffect(() => {
     const map = leafletMapRef.current;
     if (!map || engineMode !== 'leaflet') return;
@@ -249,10 +347,10 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
 
     setTileOfflineWarning(false);
     let errCount = 0;
-    const cfg = TILE_PROVIDERS[layerStyle];
+    const cfg = LEAFLET_TILE_PROVIDERS[layerStyle];
     const layer = L.tileLayer(cfg.url, {
       attribution: cfg.attribution,
-      maxZoom: cfg.maxZoom
+      maxZoom: cfg.maxZoom,
     });
 
     layer.on('tileerror', () => {
@@ -264,7 +362,6 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
     tileLayerRef.current = layer;
   }, [layerStyle, engineMode]);
 
-  // Recenter Leaflet when switching region or explicitly updating coordinates far away
   useEffect(() => {
     const map = leafletMapRef.current;
     if (!map || engineMode !== 'leaflet') return;
@@ -274,7 +371,6 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
     }
   }, [profile.id, originLat, originLon, engineMode]);
 
-  // Render Leaflet Polygon, Radius Circle, Sede Pin, and Draggable Corners
   useEffect(() => {
     const map = leafletMapRef.current;
     const group = overlayGroupRef.current;
@@ -282,7 +378,6 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
 
     group.clearLayers();
 
-    // 1. Blue dashed radius circle
     L.circle([originLat, originLon], {
       radius: farmRadiusM,
       color: '#0284c7',
@@ -290,10 +385,9 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
       dashArray: '6, 6',
       fillColor: '#0ea5e9',
       fillOpacity: 0.08,
-      interactive: false
+      interactive: false,
     }).addTo(group);
 
-    // 2. Green delimited farm polygon
     if (vertices.length >= 2) {
       const latLngs = vertices.map((v) => [v.lat, v.lon] as [number, number]);
       if (vertices.length >= 3) {
@@ -302,18 +396,17 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
           weight: 3,
           fillColor: '#10b981',
           fillOpacity: 0.24,
-          interactive: false
+          interactive: false,
         }).addTo(group);
       } else {
         L.polyline(latLngs, {
           color: '#059669',
           weight: 3,
-          interactive: false
+          interactive: false,
         }).addTo(group);
       }
     }
 
-    // 3. Draggable Corner Vertices (numbered badges)
     vertices.forEach((v, idx) => {
       const icon = L.divIcon({
         className: 'agrociclo-vertex-icon',
@@ -321,12 +414,12 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
         iconAnchor: [11, 11],
         html: `<div style="width:22px;height:22px;border-radius:9999px;background:#f59e0b;border:2.5px solid #ffffff;color:#0f172a;font-weight:800;font-size:10px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.35);cursor:move;">${
           idx + 1
-        }</div>`
+        }</div>`,
       });
 
       const marker = L.marker([v.lat, v.lon], {
         icon,
-        draggable: true
+        draggable: true,
       }).addTo(group);
 
       marker.on('dragend', () => {
@@ -335,23 +428,22 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
         const nextVerts = [...(curr.polygonVertices ?? [])];
         nextVerts[idx] = {
           lat: Number(pos.lat.toFixed(6)),
-          lon: Number(pos.lng.toFixed(6))
+          lon: Number(pos.lng.toFixed(6)),
         };
         onUpdateProfileRef.current({ ...curr, polygonVertices: nextVerts });
       });
     });
 
-    // 4. Draggable Sede Pin
     const sedeIcon = L.divIcon({
       className: 'agrociclo-sede-icon',
       iconSize: [30, 30],
       iconAnchor: [15, 15],
-      html: `<div style="width:30px;height:30px;border-radius:9999px;background:#e11d48;border:3px solid #ffffff;color:#ffffff;font-weight:900;font-size:11px;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 10px rgba(0,0,0,0.45);cursor:grab;">S</div>`
+      html: `<div style="width:30px;height:30px;border-radius:9999px;background:#e11d48;border:3px solid #ffffff;color:#ffffff;font-weight:900;font-size:11px;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 10px rgba(0,0,0,0.45);cursor:grab;">S</div>`,
     });
 
     const sedeMarker = L.marker([originLat, originLon], {
       icon: sedeIcon,
-      draggable: true
+      draggable: true,
     })
       .bindTooltip('Sede da Fazenda (Arraste para mover)', { direction: 'top', offset: [0, -14] })
       .addTo(group);
@@ -362,219 +454,456 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
       onUpdateProfileRef.current({
         ...curr,
         latitude: Number(pos.lat.toFixed(6)),
-        longitude: Number(pos.lng.toFixed(6))
+        longitude: Number(pos.lng.toFixed(6)),
       });
     });
   }, [originLat, originLon, farmRadiusM, vertices, engineMode]);
 
   // =========================================================
-  // 2. POLISHED 3D RELIEF & RAIN FLOW ENGINE
+  // 2. REAL WEBGL 3D TERRAIN & EXTRUSIONS (MAPLIBRE GL JS 4.x)
   // =========================================================
-  const project3D = useCallback(
-    (mx: number, my: number, zMeters: number, width: number, height: number) => {
-      const cx = width / 2;
-      const cy = height / 2 + 30;
-      const dx = mx - panOffsetM.x;
-      const dy = my - panOffsetM.y;
-      const rad = bearingDeg * (Math.PI / 180);
-      const rx = dx * Math.cos(rad) - dy * Math.sin(rad);
-      const ry = dx * Math.sin(rad) + dy * Math.cos(rad);
+  const build3DOverlayGeoJson = useMemo(() => {
+    const farmRing =
+      vertices.length >= 3
+        ? [...vertices.map((v) => [v.lon, v.lat] as [number, number]), [vertices[0].lon, vertices[0].lat]]
+        : makeCircleRing(originLat, originLon, farmRadiusM);
+
+    const radiusRing = makeCircleRing(originLat, originLon, farmRadiusM, 36);
+
+    const perimeterFeatures: GeoJSON.FeatureCollection = {
+      type: 'FeatureCollection',
+      features: [
+        {
+          type: 'Feature',
+          properties: { kind: 'radius' },
+          geometry: { type: 'LineString', coordinates: radiusRing },
+        },
+        {
+          type: 'Feature',
+          properties: { kind: 'farm-area', height: 6 },
+          geometry: { type: 'Polygon', coordinates: [farmRing] },
+        },
+        ...(vertices.length >= 2 && vertices.length < 3
+          ? [
+              {
+                type: 'Feature' as const,
+                properties: { kind: 'draft-line' },
+                geometry: {
+                  type: 'LineString' as const,
+                  coordinates: vertices.map((v) => [v.lon, v.lat]),
+                },
+              },
+            ]
+          : []),
+      ],
+    };
+
+    // Talhões 3D extrudados distribuídos ao redor da fazenda
+    const sectorCount = Math.max(1, profile.sectors.length);
+    const sectorFeatures: GeoJSON.Feature[] = profile.sectors.map((sec, i) => {
+      const ang = ((i / sectorCount) * Math.PI * 2) + Math.PI / 5;
+      const dist = farmRadiusM * 0.44;
+      const cx = Math.cos(ang) * dist;
+      const cy = Math.sin(ang) * dist;
+      const halfSize = Math.max(42, Math.min(95, farmRadiusM * 0.22));
+      const color =
+        sec.diagnosticStatus === 'leak_alert'
+          ? '#e11d48'
+          : sec.diagnosticStatus === 'clogged_alert'
+            ? '#d97706'
+            : '#059669';
       return {
-        sx: cx + rx * pixelsPerMeter,
-        sy: cy - ry * pixelsPerMeter * 0.56 - zMeters * pixelsPerMeter * 1.55,
-        ryRot: ry
+        type: 'Feature',
+        properties: {
+          name: sec.name,
+          color,
+          height: sec.valveStatus === 'open' ? 14 : 9,
+        },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [makeRectPolygon(cx, cy, halfSize, halfSize * 0.72, originLat, originLon)],
+        },
       };
-    },
-    [bearingDeg, panOffsetM.x, panOffsetM.y, pixelsPerMeter]
-  );
+    });
 
-  const draw3D = useCallback(() => {
-    const canvas = canvas3DRef.current;
-    if (!canvas || engineMode !== 'relief3d') return;
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return;
+    // Estruturas 3D: Barcaça / Telhado de Captação (terracota) e Reservatório/Açude (azul água)
+    const structuresFeatures: GeoJSON.Feature[] = [
+      {
+        type: 'Feature',
+        properties: { name: 'Barcaça / Sede (Telhado Pluvial)', color: '#b45309', height: 22 },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [makeRectPolygon(0, 0, 22, 16, originLat, originLon)],
+        },
+      },
+      {
+        type: 'Feature',
+        properties: { name: 'Açude / Reservatório Principal', color: '#0284c7', height: 11 },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [makeRectPolygon(44, -36, 26, 20, originLat, originLon)],
+        },
+      },
+    ];
 
-    const w = Math.round(rect.width);
-    const h = Math.round(rect.height);
-    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-    }
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.save();
-    ctx.scale(dpr, dpr);
-
-    // Soft sky + ground gradient
-    const sky = ctx.createLinearGradient(0, 0, 0, h);
-    sky.addColorStop(0, '#dbeafe');
-    sky.addColorStop(0.35, '#ecfdf5');
-    sky.addColorStop(1, '#dcfce7');
-    ctx.fillStyle = sky;
-    ctx.fillRect(0, 0, w, h);
-
-    // 3D Terrain mesh
-    const span = 640;
-    const step = 64;
-    const maxAlt = Math.max(10, elevationBounds.maxM);
-    const quads: Array<{
-      pts: Array<{ sx: number; sy: number }>;
-      depth: number;
-      fill: string;
-      stroke: string;
-    }> = [];
-
-    for (let x = -span; x < span; x += step) {
-      for (let y = -span; y < span; y += step) {
-        const z00 = getTerrainElevationM(x, y, slopePct, profile.id);
-        const z10 = getTerrainElevationM(x + step, y, slopePct, profile.id);
-        const z11 = getTerrainElevationM(x + step, y + step, slopePct, profile.id);
-        const z01 = getTerrainElevationM(x, y + step, slopePct, profile.id);
-
-        const p00 = project3D(x, y, z00, w, h);
-        const p10 = project3D(x + step, y, z10, w, h);
-        const p11 = project3D(x + step, y + step, z11, w, h);
-        const p01 = project3D(x, y + step, z01, w, h);
-
-        const avgZ = (z00 + z10 + z11 + z01) / 4;
-        const normH = Math.min(1, Math.max(0, avgZ / maxAlt));
-        const dzdx = (z10 - z00 + z11 - z01) / (2 * step);
-        const dzdy = (z01 - z00 + z11 - z10) / (2 * step);
-        const shade = Math.max(-0.35, Math.min(0.35, (-dzdx * 0.7 + dzdy * 0.7) * 1.4));
-
-        const baseR = profile.id === 'oeste' ? 218 : 138;
-        const baseG = profile.id === 'oeste' ? 215 : 210;
-        const baseB = profile.id === 'oeste' ? 145 : 146;
-        const r = Math.round(Math.min(248, Math.max(75, baseR + normH * 56 + shade * 60)));
-        const g = Math.round(Math.min(245, Math.max(115, baseG + normH * 22 + shade * 55)));
-        const b = Math.round(Math.min(205, Math.max(70, baseB - normH * 24 + shade * 35)));
-
-        quads.push({
-          pts: [p00, p10, p11, p01],
-          depth: (p00.ryRot + p10.ryRot + p11.ryRot + p01.ryRot) / 4,
-          fill: `rgb(${r}, ${g}, ${b})`,
-          stroke: 'rgba(20, 83, 45, 0.14)'
-        });
-      }
-    }
-
-    quads.sort((a, b) => b.depth - a.depth);
-    for (const q of quads) {
-      ctx.beginPath();
-      ctx.moveTo(q.pts[0].sx, q.pts[0].sy);
-      ctx.lineTo(q.pts[1].sx, q.pts[1].sy);
-      ctx.lineTo(q.pts[2].sx, q.pts[2].sy);
-      ctx.lineTo(q.pts[3].sx, q.pts[3].sy);
-      ctx.closePath();
-      ctx.fillStyle = q.fill;
-      ctx.fill();
-      ctx.strokeStyle = q.stroke;
-      ctx.lineWidth = 0.7;
-      ctx.stroke();
-    }
-
-    // Blue water flow arrows downhill
+    // Linhas/Setas de escoamento da chuva seguindo o declive do terreno
+    const runoffFeatures: GeoJSON.Feature[] = [];
     if (showRunoffArrows && slopePct >= 2) {
-      for (let ax = -360; ax <= 360; ax += 180) {
-        for (let ay = -300; ay <= 300; ay += 150) {
+      const step = Math.max(120, Math.round(farmRadiusM * 0.55));
+      for (let ax = -step; ax <= step; ax += step) {
+        for (let ay = -step; ay <= step; ay += step) {
           const vec = getTerrainDownhillVector(ax, ay, slopePct, profile.id);
-          const tailZ = getTerrainElevationM(ax, ay, slopePct, profile.id) + 1.5;
-          const headX = ax + vec.dx * 50;
-          const headY = ay + vec.dy * 50;
-          const headZ = getTerrainElevationM(headX, headY, slopePct, profile.id) + 1.5;
-
-          const p1 = project3D(ax, ay, tailZ, w, h);
-          const p2 = project3D(headX, headY, headZ, w, h);
-
-          ctx.beginPath();
-          ctx.moveTo(p1.sx, p1.sy);
-          ctx.lineTo(p2.sx, p2.sy);
-          ctx.strokeStyle = 'rgba(2, 132, 199, 0.8)';
-          ctx.lineWidth = 2.4;
-          ctx.stroke();
-
-          const ang = Math.atan2(p2.sy - p1.sy, p2.sx - p1.sx);
-          ctx.beginPath();
-          ctx.moveTo(p2.sx, p2.sy);
-          ctx.lineTo(p2.sx - Math.cos(ang - 0.55) * 7, p2.sy - Math.sin(ang - 0.55) * 7);
-          ctx.lineTo(p2.sx - Math.cos(ang + 0.55) * 7, p2.sy - Math.sin(ang + 0.55) * 7);
-          ctx.closePath();
-          ctx.fillStyle = '#0284c7';
-          ctx.fill();
+          const p1 = localMetersToLatLon(ax, ay, originLat, originLon);
+          const p2 = localMetersToLatLon(ax + vec.dx * 70, ay + vec.dy * 70, originLat, originLon);
+          const arrowEnd = localMetersToLatLon(ax + vec.dx * 70, ay + vec.dy * 70, originLat, originLon);
+          const leftWing = localMetersToLatLon(
+            ax + vec.dx * 48 - vec.dy * 15,
+            ay + vec.dy * 48 + vec.dx * 15,
+            originLat,
+            originLon
+          );
+          const rightWing = localMetersToLatLon(
+            ax + vec.dx * 48 + vec.dy * 15,
+            ay + vec.dy * 48 - vec.dx * 15,
+            originLat,
+            originLon
+          );
+          runoffFeatures.push(
+            {
+              type: 'Feature',
+              properties: { kind: 'flow' },
+              geometry: {
+                type: 'LineString',
+                coordinates: [
+                  [p1.lon, p1.lat],
+                  [p2.lon, p2.lat],
+                ],
+              },
+            },
+            {
+              type: 'Feature',
+              properties: { kind: 'head' },
+              geometry: {
+                type: 'LineString',
+                coordinates: [
+                  [leftWing.lon, leftWing.lat],
+                  [arrowEnd.lon, arrowEnd.lat],
+                  [rightWing.lon, rightWing.lat],
+                ],
+              },
+            }
+          );
         }
       }
     }
 
-    // Farm Polygon Fence in 3D
-    const polyLocal = vertices.map((v) => latLonToLocalMeters(v.lat, v.lon, originLat, originLon));
-    if (polyLocal.length >= 3) {
-      const groundPts = polyLocal.map((p) =>
-        project3D(p.x, p.y, getTerrainElevationM(p.x, p.y, slopePct, profile.id) + 0.8, w, h)
-      );
-      const topPts = polyLocal.map((p) =>
-        project3D(p.x, p.y, getTerrainElevationM(p.x, p.y, slopePct, profile.id) + 10, w, h)
-      );
+    return {
+      perimeter: perimeterFeatures,
+      extrusions: {
+        type: 'FeatureCollection' as const,
+        features: [...sectorFeatures, ...structuresFeatures],
+      },
+      runoff: {
+        type: 'FeatureCollection' as const,
+        features: runoffFeatures,
+      },
+    };
+  }, [farmRadiusM, originLat, originLon, profile.id, profile.sectors, showRunoffArrows, slopePct, vertices]);
 
-      for (let i = 0; i < groundPts.length; i++) {
-        const next = (i + 1) % groundPts.length;
-        ctx.beginPath();
-        ctx.moveTo(groundPts[i].sx, groundPts[i].sy);
-        ctx.lineTo(groundPts[next].sx, groundPts[next].sy);
-        ctx.lineTo(topPts[next].sx, topPts[next].sy);
-        ctx.lineTo(topPts[i].sx, topPts[i].sy);
-        ctx.closePath();
-        ctx.fillStyle = 'rgba(16, 185, 129, 0.25)';
-        ctx.fill();
-        ctx.strokeStyle = '#047857';
-        ctx.lineWidth = 1.6;
-        ctx.stroke();
+  const applyOverlaysToMapLibre = (
+    map: maplibregl.Map,
+    overlays: ReturnType<() => typeof build3DOverlayGeoJson>
+  ) => {
+    const ensureGeoJsonSource = (id: string, data: GeoJSON.FeatureCollection) => {
+      const existing = map.getSource(id) as maplibregl.GeoJSONSource | undefined;
+      if (existing) {
+        existing.setData(data);
+      } else {
+        map.addSource(id, { type: 'geojson', data });
       }
+    };
+
+    ensureGeoJsonSource('farm-perimeter-src', overlays.perimeter);
+    ensureGeoJsonSource('farm-extrusions-src', overlays.extrusions);
+    ensureGeoJsonSource('farm-runoff-src', overlays.runoff);
+
+    if (!map.getLayer('farm-radius-line')) {
+      map.addLayer({
+        id: 'farm-radius-line',
+        type: 'line',
+        source: 'farm-perimeter-src',
+        filter: ['==', ['get', 'kind'], 'radius'],
+        paint: {
+          'line-color': '#38bdf8',
+          'line-width': 2.5,
+          'line-dasharray': [3, 2],
+        },
+      });
     }
 
-    // High point altitude tag
-    const highP = project3D(
-      elevationBounds.maxPt.x,
-      elevationBounds.maxPt.y,
-      getTerrainElevationM(elevationBounds.maxPt.x, elevationBounds.maxPt.y, slopePct, profile.id) + 5,
-      w,
-      h
-    );
-    ctx.fillStyle = 'rgba(120, 53, 15, 0.9)';
-    ctx.fillRect(highP.sx - 42, highP.sy - 16, 84, 18);
-    ctx.fillStyle = '#fef3c7';
-    ctx.font = 'bold 10px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(`Topo +${elevationBounds.maxM}m`, highP.sx, highP.sy - 4);
+    if (!map.getLayer('farm-area-3d')) {
+      map.addLayer({
+        id: 'farm-area-3d',
+        type: 'fill-extrusion',
+        source: 'farm-perimeter-src',
+        filter: ['==', ['get', 'kind'], 'farm-area'],
+        paint: {
+          'fill-extrusion-color': '#10b981',
+          'fill-extrusion-height': ['get', 'height'],
+          'fill-extrusion-base': 0,
+          'fill-extrusion-opacity': 0.28,
+        },
+      });
+    }
 
-    // Sede Marker in 3D
-    const sz = getTerrainElevationM(0, 0, slopePct, profile.id);
-    const sg = project3D(0, 0, sz, w, h);
-    const st = project3D(0, 0, sz + 11, w, h);
-    ctx.fillStyle = '#b45309';
-    ctx.fillRect(sg.sx - 10, st.sy, 20, sg.sy - st.sy + 3);
-    ctx.beginPath();
-    ctx.moveTo(sg.sx - 14, st.sy);
-    ctx.lineTo(sg.sx, st.sy - 10);
-    ctx.lineTo(sg.sx + 14, st.sy);
-    ctx.closePath();
-    ctx.fillStyle = '#dc2626';
-    ctx.fill();
+    if (!map.getLayer('farm-area-outline')) {
+      map.addLayer({
+        id: 'farm-area-outline',
+        type: 'line',
+        source: 'farm-perimeter-src',
+        filter: ['==', ['get', 'kind'], 'farm-area'],
+        paint: {
+          'line-color': '#34d399',
+          'line-width': 3,
+        },
+      });
+    }
 
-    ctx.restore();
-  }, [engineMode, elevationBounds, originLat, originLon, profile.id, project3D, showRunoffArrows, slopePct, vertices]);
+    if (!map.getLayer('farm-sectors-3d')) {
+      map.addLayer({
+        id: 'farm-sectors-3d',
+        type: 'fill-extrusion',
+        source: 'farm-extrusions-src',
+        paint: {
+          'fill-extrusion-color': ['get', 'color'],
+          'fill-extrusion-height': ['get', 'height'],
+          'fill-extrusion-base': 0,
+          'fill-extrusion-opacity': 0.85,
+        },
+      });
+    }
+
+    if (!map.getLayer('farm-runoff-lines')) {
+      map.addLayer({
+        id: 'farm-runoff-lines',
+        type: 'line',
+        source: 'farm-runoff-src',
+        paint: {
+          'line-color': '#0ea5e9',
+          'line-width': 3,
+          'line-opacity': 0.9,
+        },
+      });
+    }
+  };
 
   useEffect(() => {
-    draw3D();
-    window.addEventListener('resize', draw3D);
-    return () => window.removeEventListener('resize', draw3D);
-  }, [draw3D]);
+    if (engineMode !== 'relief3d') return;
+    const container = maplibreContainerRef.current;
+    if (!container) return;
 
-  const recenterLeaflet = (lat: number, lon: number) => {
-    if (leafletMapRef.current) {
+    setWebglError(null);
+    setMapLibreReady(false);
+    setTileOfflineWarning(false);
+
+    let map: maplibregl.Map;
+    try {
+      map = new maplibregl.Map({
+        container,
+        style: build3DStyle(layerStyle),
+        center: [originLon, originLat],
+        zoom: 15.2,
+        pitch: pitchDeg,
+        bearing: bearingDeg,
+        maxPitch: 78,
+        antialias: true,
+        attributionControl: { compact: true },
+      });
+    } catch {
+      setWebglError(
+        'Navegador sem suporte ativo a WebGL para o Relevo 3D. Use o modo Mapa Real (Leaflet) ao lado.'
+      );
+      return;
+    }
+
+    map.addControl(
+      new maplibregl.NavigationControl({ visualizePitch: true, showCompass: true }),
+      'top-right'
+    );
+
+    const configureScene = () => {
+      try {
+        map.setTerrain({ source: 'terrain-dem', exaggeration: terrainExag });
+      } catch {
+        // Ignora caso tiles DEM estejam offline
+      }
+      try {
+        map.setSky({
+          'sky-color': '#7dd3fc',
+          'sky-horizon-blend': 0.45,
+          'horizon-color': '#ecfdf5',
+          'atmosphere-blend': 0.65,
+        });
+      } catch {
+        // Fallback gracioso em drivers WebGL sem suporte ao Sky layer
+      }
+      applyOverlaysToMapLibre(map, build3DOverlayGeoJson);
+      setMapLibreReady(true);
+    };
+
+    map.on('load', configureScene);
+    map.on('styledata', () => {
+      if (map.isStyleLoaded()) {
+        configureScene();
+      }
+    });
+
+    map.on('error', (ev) => {
+      const msg = String(ev?.error?.message || '');
+      if (msg.toLowerCase().includes('webgl')) {
+        setWebglError(
+          'WebGL indisponível neste dispositivo. Alterne para Mapa Real (Leaflet) para visualizar em 2D.'
+        );
+      }
+    });
+
+    map.on('moveend', () => {
+      setBearingDeg(Math.round(map.getBearing()));
+      setPitchDeg(Math.round(map.getPitch()));
+    });
+
+    map.on('click', (e) => {
+      if (!drawingModeRef.current) return;
+      const curr = profileRef.current;
+      const nextPt: LatLonPoint = {
+        lat: Number(e.lngLat.lat.toFixed(6)),
+        lon: Number(e.lngLat.lng.toFixed(6)),
+      };
+      onUpdateProfileRef.current({
+        ...curr,
+        polygonVertices: [...(curr.polygonVertices ?? []), nextPt],
+      });
+    });
+
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => {
+            map.resize();
+          })
+        : null;
+    if (resizeObserver) resizeObserver.observe(container);
+
+    maplibreMapRef.current = map;
+    const mountTimer = window.setTimeout(() => map.resize(), 120);
+
+    return () => {
+      window.clearTimeout(mountTimer);
+      if (resizeObserver) resizeObserver.disconnect();
+      maplibreMarkersRef.current.forEach((m) => m.remove());
+      maplibreMarkersRef.current = [];
+      map.remove();
+      maplibreMapRef.current = null;
+      setMapLibreReady(false);
+    };
+    // Recria o mapa MapLibre 3D ao entrar na aba 3D ou trocar estilo de camada base
+  }, [engineMode, layerStyle]);
+
+  // Atualiza sobreposições GeoJSON e marcadores 3D sem recriar o contexto WebGL
+  useEffect(() => {
+    const map = maplibreMapRef.current;
+    if (!map || engineMode !== 'relief3d' || !mapLibreReady) return;
+
+    applyOverlaysToMapLibre(map, build3DOverlayGeoJson);
+
+    maplibreMarkersRef.current.forEach((m) => m.remove());
+    maplibreMarkersRef.current = [];
+
+    // Marcador arrastável da Sede
+    const sedeEl = document.createElement('div');
+    sedeEl.style.cssText =
+      'width:30px;height:30px;border-radius:9999px;background:#e11d48;border:3px solid #ffffff;color:#ffffff;font-weight:900;font-size:11px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,0.45);cursor:grab;';
+    sedeEl.textContent = 'S';
+    sedeEl.title = 'Sede da Fazenda (Arraste para mover)';
+
+    const sedeMarker = new maplibregl.Marker({ element: sedeEl, draggable: true })
+      .setLngLat([originLon, originLat])
+      .addTo(map);
+
+    sedeMarker.on('dragend', () => {
+      const pos = sedeMarker.getLngLat();
+      const curr = profileRef.current;
+      onUpdateProfileRef.current({
+        ...curr,
+        latitude: Number(pos.lat.toFixed(6)),
+        longitude: Number(pos.lng.toFixed(6)),
+      });
+    });
+    maplibreMarkersRef.current.push(sedeMarker);
+
+    // Marcadores arrastáveis dos cantos
+    vertices.forEach((v, idx) => {
+      const vEl = document.createElement('div');
+      vEl.style.cssText =
+        'width:22px;height:22px;border-radius:9999px;background:#f59e0b;border:2.5px solid #ffffff;color:#0f172a;font-weight:800;font-size:10px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.4);cursor:move;';
+      vEl.textContent = String(idx + 1);
+
+      const m = new maplibregl.Marker({ element: vEl, draggable: true })
+        .setLngLat([v.lon, v.lat])
+        .addTo(map);
+
+      m.on('dragend', () => {
+        const pos = m.getLngLat();
+        const curr = profileRef.current;
+        const nextVerts = [...(curr.polygonVertices ?? [])];
+        nextVerts[idx] = {
+          lat: Number(pos.lat.toFixed(6)),
+          lon: Number(pos.lng.toFixed(6)),
+        };
+        onUpdateProfileRef.current({ ...curr, polygonVertices: nextVerts });
+      });
+      maplibreMarkersRef.current.push(m);
+    });
+  }, [build3DOverlayGeoJson, engineMode, mapLibreReady, originLat, originLon, vertices]);
+
+  // Atualiza exagero 3D do relevo quando o usuário ajusta declividade ou slider
+  useEffect(() => {
+    const map = maplibreMapRef.current;
+    if (!map || engineMode !== 'relief3d' || !mapLibreReady) return;
+    try {
+      map.setTerrain({ source: 'terrain-dem', exaggeration: terrainExag });
+    } catch {
+      // ignore if style reloading
+    }
+  }, [engineMode, mapLibreReady, terrainExag]);
+
+  // Centraliza câmera 3D automaticamente ao alternar Ilhéus <-> Oeste
+  useEffect(() => {
+    const map = maplibreMapRef.current;
+    if (!map || engineMode !== 'relief3d') return;
+    if (lastRegion3DRef.current !== profile.id) {
+      lastRegion3DRef.current = profile.id;
+      map.flyTo({
+        center: [originLon, originLat],
+        zoom: 15.2,
+        pitch: pitchDeg,
+        bearing: bearingDeg,
+        duration: 850,
+      });
+    }
+  }, [bearingDeg, engineMode, originLat, originLon, pitchDeg, profile.id]);
+
+  const recenterActiveMap = (lat: number, lon: number) => {
+    if (engineMode === 'leaflet' && leafletMapRef.current) {
       leafletMapRef.current.setView([lat, lon], 16, { animate: true });
+    }
+    if (engineMode === 'relief3d' && maplibreMapRef.current) {
+      maplibreMapRef.current.flyTo({
+        center: [lon, lat],
+        zoom: 15.2,
+        pitch: pitchDeg,
+        bearing: bearingDeg,
+        duration: 750,
+      });
     }
   };
 
@@ -591,7 +920,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
         setLatInput(String(lat));
         setLonInput(String(lon));
         onUpdateProfile({ ...profile, latitude: lat, longitude: lon });
-        recenterLeaflet(lat, lon);
+        recenterActiveMap(lat, lon);
         setGpsStatus('Localização aplicada!');
       },
       () => setGpsStatus('Permita o GPS ou escolha sua cidade abaixo.')
@@ -607,7 +936,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
     const cleanLat = Number(lat.toFixed(6));
     const cleanLon = Number(lon.toFixed(6));
     onUpdateProfile({ ...profile, latitude: cleanLat, longitude: cleanLon });
-    recenterLeaflet(cleanLat, cleanLon);
+    recenterActiveMap(cleanLat, cleanLon);
   };
 
   const handleGenerateFromRadius = () => {
@@ -617,7 +946,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
       [r * 0.72, r * 0.74],
       [r * 0.85, -r * 0.45],
       [-r * 0.15, -r * 0.85],
-      [-r * 0.82, -r * 0.35]
+      [-r * 0.82, -r * 0.35],
     ];
     const generated = offsets.map(([dx, dy]) => localMetersToLatLon(dx, dy, originLat, originLon));
     onUpdateProfile({ ...profile, polygonVertices: generated });
@@ -632,7 +961,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
       ...profile,
       totalAreaHa: newTotalHa,
       cacaoAreaHa: newCacaoHa,
-      estimatedPlants: Math.round(newCacaoHa * profile.plantingDensityPerHa)
+      estimatedPlants: Math.round(newCacaoHa * profile.plantingDensityPerHa),
     });
     setSavedNotice(true);
     setTimeout(() => setSavedNotice(false), 3500);
@@ -644,7 +973,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
     onUpdateProfile({
       ...profile,
       terrainSlopePct: nextSlope,
-      terrainProfileType: profileType
+      terrainProfileType: profileType,
     });
   };
 
@@ -661,93 +990,90 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
               Mapa da Fazenda
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Marque os cantos da sua roça no mapa real (Leaflet) ou veja o relevo 3D
+              Mapa 2D (Leaflet) e Relevo 3D WebGL em tempo real (MapLibre GL)
             </p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {/* Switch Engine: Leaflet vs 3D Relief */}
+          {/* Switch Engine: Leaflet 2D vs MapLibre 3D */}
           <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-xs font-bold">
             <button
               type="button"
               onClick={() => setEngineMode('leaflet')}
-              className={`px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 transition-all ${
+              className={`px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 transition-all cursor-pointer ${
                 engineMode === 'leaflet'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-300'
               }`}
             >
               <MapIcon className="w-3.5 h-3.5" />
-              Mapa Real (Leaflet)
+              Mapa 2D (Leaflet)
             </button>
             <button
               type="button"
               onClick={() => setEngineMode('relief3d')}
-              className={`px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 transition-all ${
+              className={`px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 transition-all cursor-pointer ${
                 engineMode === 'relief3d'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-300'
               }`}
             >
               <Box className="w-3.5 h-3.5" />
-              Relevo 3D
+              Relevo 3D (WebGL)
             </button>
           </div>
 
-          {engineMode === 'leaflet' && (
-            <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-xs font-bold">
-              <button
-                type="button"
-                onClick={() => setLayerStyle('satellite')}
-                className={`px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 ${
-                  layerStyle === 'satellite'
-                    ? 'bg-white dark:bg-slate-700 text-sky-700 dark:text-sky-300 shadow-sm'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                <Satellite className="w-3.5 h-3.5" />
-                Satélite
-              </button>
-              <button
-                type="button"
-                onClick={() => setLayerStyle('streets')}
-                className={`px-2.5 py-1.5 rounded-lg ${
-                  layerStyle === 'streets'
-                    ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                Ruas
-              </button>
-              <button
-                type="button"
-                onClick={() => setLayerStyle('topo')}
-                className={`px-2.5 py-1.5 rounded-lg ${
-                  layerStyle === 'topo'
-                    ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-300 shadow-sm'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                Relevo
-              </button>
-            </div>
-          )}
-
-          {engineMode === 'leaflet' && (
+          {/* Seletor de Camada Base (funciona em ambos 2D e 3D WebGL!) */}
+          <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-xs font-bold">
             <button
               type="button"
-              onClick={() => setDrawingMode((v) => !v)}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 border transition-all ${
-                drawingMode
-                  ? 'bg-amber-400 text-slate-950 border-amber-500 shadow-sm'
-                  : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700'
+              onClick={() => setLayerStyle('satellite')}
+              className={`px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1 cursor-pointer ${
+                layerStyle === 'satellite'
+                  ? 'bg-white dark:bg-slate-700 text-sky-700 dark:text-sky-300 shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400'
               }`}
             >
-              <Pencil className="w-3.5 h-3.5" />
-              {drawingMode ? 'Clicar p/ Marcar Cantos: ON' : 'Marcar Cantos: OFF'}
+              <Satellite className="w-3.5 h-3.5" />
+              Satélite
             </button>
-          )}
+            <button
+              type="button"
+              onClick={() => setLayerStyle('streets')}
+              className={`px-2.5 py-1.5 rounded-lg cursor-pointer ${
+                layerStyle === 'streets'
+                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              Ruas
+            </button>
+            <button
+              type="button"
+              onClick={() => setLayerStyle('topo')}
+              className={`px-2.5 py-1.5 rounded-lg cursor-pointer ${
+                layerStyle === 'topo'
+                  ? 'bg-white dark:bg-slate-700 text-emerald-700 dark:text-emerald-300 shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              Relevo
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setDrawingMode((v) => !v)}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 border transition-all cursor-pointer ${
+              drawingMode
+                ? 'bg-amber-400 text-slate-950 border-amber-500 shadow-sm'
+                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700'
+            }`}
+          >
+            <Pencil className="w-3.5 h-3.5" />
+            {drawingMode ? 'Clicar p/ Marcar Cantos: ON' : 'Marcar Cantos: OFF'}
+          </button>
         </div>
       </div>
 
@@ -762,7 +1088,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
               <button
                 type="button"
                 onClick={() => setShowManualCoords((v) => !v)}
-                className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline inline-flex items-center gap-1"
+                className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline inline-flex items-center gap-1 cursor-pointer"
               >
                 <Crosshair className="w-3 h-3" />
                 Coordenadas
@@ -773,7 +1099,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
               <button
                 type="button"
                 onClick={handleUseBrowserGps}
-                className="py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold inline-flex items-center justify-center gap-1.5 shadow-sm"
+                className="py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold inline-flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
               >
                 <Compass className="w-4 h-4" />
                 Usar Meu GPS
@@ -787,7 +1113,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
                   setLatInput(String(found.lat));
                   setLonInput(String(found.lon));
                   onUpdateProfile({ ...profile, latitude: found.lat, longitude: found.lon });
-                  recenterLeaflet(found.lat, found.lon);
+                  recenterActiveMap(found.lat, found.lon);
                 }}
                 className="border border-slate-300 dark:border-slate-700 rounded-xl px-2.5 py-2 bg-white dark:bg-slate-800 font-semibold text-slate-800 dark:text-slate-100"
               >
@@ -822,7 +1148,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
                 <button
                   type="button"
                   onClick={handleApplyCoords}
-                  className="bg-slate-800 dark:bg-slate-700 text-white font-bold rounded-lg inline-flex items-center justify-center gap-1"
+                  className="bg-slate-800 dark:bg-slate-700 text-white font-bold rounded-lg inline-flex items-center justify-center gap-1 cursor-pointer"
                 >
                   <Navigation className="w-3 h-3" /> Ir
                 </button>
@@ -856,7 +1182,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
                 type="button"
                 onClick={() => onUpdateProfile({ ...profile, polygonVertices: vertices.slice(0, -1) })}
                 disabled={vertices.length === 0}
-                className="py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 font-bold text-slate-700 dark:text-slate-200 inline-flex items-center justify-center gap-1"
+                className="py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 font-bold text-slate-700 dark:text-slate-200 inline-flex items-center justify-center gap-1 cursor-pointer"
               >
                 <Undo2 className="w-3.5 h-3.5" /> Desfazer
               </button>
@@ -864,14 +1190,14 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
                 type="button"
                 onClick={() => onUpdateProfile({ ...profile, polygonVertices: [] })}
                 disabled={vertices.length === 0}
-                className="py-2 rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50/70 dark:bg-rose-950/40 hover:bg-rose-100 disabled:opacity-40 font-bold text-rose-700 dark:text-rose-300 inline-flex items-center justify-center gap-1"
+                className="py-2 rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50/70 dark:bg-rose-950/40 hover:bg-rose-100 disabled:opacity-40 font-bold text-rose-700 dark:text-rose-300 inline-flex items-center justify-center gap-1 cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" /> Limpar
               </button>
               <button
                 type="button"
                 onClick={handleGenerateFromRadius}
-                className="py-2 rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-950/40 hover:bg-sky-100 font-bold text-sky-800 dark:text-sky-300 inline-flex items-center justify-center gap-1"
+                className="py-2 rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-950/40 hover:bg-sky-100 font-bold text-sky-800 dark:text-sky-300 inline-flex items-center justify-center gap-1 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" /> Auto
               </button>
@@ -890,7 +1216,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
                 type="button"
                 onClick={handleApplyDelimitedArea}
                 disabled={geometry.areaHa <= 0.05}
-                className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold inline-flex items-center gap-1.5 shadow-sm"
+                className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold inline-flex items-center gap-1.5 shadow-sm cursor-pointer"
               >
                 <CheckCircle2 className="w-4 h-4" />
                 Salvar Área
@@ -921,13 +1247,13 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
                 { label: 'Plano', val: 3 },
                 { label: 'Leve', val: 10 },
                 { label: 'Morro', val: 18 },
-                { label: 'Forte', val: 28 }
+                { label: 'Forte', val: 28 },
               ].map((p) => (
                 <button
                   key={p.label}
                   type="button"
                   onClick={() => handleUpdateSlope(p.val)}
-                  className={`py-1.5 rounded-lg font-bold border text-[11px] transition-all ${
+                  className={`py-1.5 rounded-lg font-bold border text-[11px] transition-all cursor-pointer ${
                     Math.abs(slopePct - p.val) <= 3
                       ? 'bg-emerald-600 text-white border-emerald-600'
                       : 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
@@ -963,7 +1289,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
               <button
                 type="button"
                 onClick={onOpenSimulator}
-                className="w-full py-2 rounded-xl bg-sky-50 dark:bg-sky-950/50 hover:bg-sky-100 dark:hover:bg-sky-900/60 text-sky-800 dark:text-sky-300 font-bold border border-sky-200 dark:border-sky-800 inline-flex items-center justify-center gap-1"
+                className="w-full py-2 rounded-xl bg-sky-50 dark:bg-sky-950/50 hover:bg-sky-100 dark:hover:bg-sky-900/60 text-sky-800 dark:text-sky-300 font-bold border border-sky-200 dark:border-sky-800 inline-flex items-center justify-center gap-1 cursor-pointer"
               >
                 <span>Ver Detalhes em Seca e Chuva</span>
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -989,7 +1315,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
               </div>
 
               {engineMode === 'relief3d' ? (
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <ToggleSwitch
                     size="sm"
                     checked={showRunoffArrows}
@@ -999,26 +1325,33 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
                   />
                   <button
                     type="button"
-                    onClick={() => setPixelsPerMeter((z) => Math.min(1.6, z * 1.15))}
-                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                    onClick={() => maplibreMapRef.current?.zoomIn()}
+                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 cursor-pointer"
                     title="Zoom +"
                   >
                     <ZoomIn className="w-3.5 h-3.5" />
                   </button>
                   <button
                     type="button"
-                    onClick={() => setPixelsPerMeter((z) => Math.max(0.22, z / 1.15))}
-                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                    onClick={() => maplibreMapRef.current?.zoomOut()}
+                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 cursor-pointer"
                     title="Zoom -"
                   >
                     <ZoomOut className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => recenterActiveMap(originLat, originLon)}
+                    className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold hover:bg-slate-100 cursor-pointer"
+                  >
+                    Centralizar 3D
                   </button>
                 </div>
               ) : (
                 <button
                   type="button"
-                  onClick={() => recenterLeaflet(originLat, originLon)}
-                  className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold hover:bg-slate-100"
+                  onClick={() => recenterActiveMap(originLat, originLon)}
+                  className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold hover:bg-slate-100 cursor-pointer"
                 >
                   Centralizar na Sede
                 </button>
@@ -1042,58 +1375,80 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
                 </div>
               </div>
             ) : (
-              <div className="relative h-[340px] sm:h-[440px] lg:h-[530px] mobile-map-box w-full">
-                <canvas
-                  ref={canvas3DRef}
-                  onPointerDown={(e) => {
-                    drag3DRef.current = {
-                      active: true,
-                      startClientX: e.clientX,
-                      startClientY: e.clientY,
-                      startPanX: panOffsetM.x,
-                      startPanY: panOffsetM.y
-                    };
-                  }}
-                  onPointerMove={(e) => {
-                    if (!drag3DRef.current.active) return;
-                    const dx = e.clientX - drag3DRef.current.startClientX;
-                    const dy = e.clientY - drag3DRef.current.startClientY;
-                    const rad = -bearingDeg * (Math.PI / 180);
-                    const mx = -dx / pixelsPerMeter;
-                    const my = (dy * 1.55) / pixelsPerMeter;
-                    setPanOffsetM({
-                      x: drag3DRef.current.startPanX + mx * Math.cos(rad) - my * Math.sin(rad),
-                      y: drag3DRef.current.startPanY + mx * Math.sin(rad) + my * Math.cos(rad)
-                    });
-                  }}
-                  onPointerUp={() => {
-                    drag3DRef.current.active = false;
-                  }}
-                  onPointerCancel={() => {
-                    drag3DRef.current.active = false;
-                  }}
-                  className="w-full h-full block touch-none cursor-grab active:cursor-grabbing"
-                />
+              <div className="relative h-[360px] sm:h-[450px] lg:h-[540px] mobile-map-box w-full bg-slate-950">
+                <div ref={maplibreContainerRef} className="w-full h-full" />
 
-                <div className="absolute bottom-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs shadow-sm">
+                {webglError && (
+                  <div className="absolute inset-0 z-20 flex flex-col items-center justify-center p-6 text-center bg-slate-900/95 text-white gap-3">
+                    <Box className="w-10 h-10 text-amber-400" />
+                    <p className="text-sm font-bold max-w-md">{webglError}</p>
+                    <button
+                      type="button"
+                      onClick={() => setEngineMode('leaflet')}
+                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
+                    >
+                      Voltar para Mapa 2D (Leaflet)
+                    </button>
+                  </div>
+                )}
+
+                {/* Barra de controles 3D WebGL (Inclinação, Giro, Exagero do Relevo) */}
+                <div className="absolute bottom-3 left-3 right-3 z-10 flex flex-wrap items-center justify-between gap-2 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs shadow-md">
                   <div className="flex items-center gap-2 font-bold text-slate-700 dark:text-slate-200">
-                    <CloudRain className="w-4 h-4 text-sky-600" />
+                    <CloudRain className="w-4 h-4 text-sky-600 shrink-0" />
                     <span>
-                      Desnível de {elevationBounds.diffM} m ({slopePct}%) • Setas mostram para onde a chuva desce
+                      Relevo WebGL ({elevationBounds.diffM} m desnível • {slopePct}%)
                     </span>
                   </div>
-                  <label className="flex items-center gap-2 font-bold text-slate-700 dark:text-slate-200">
-                    <span>Girar 3D:</span>
-                    <input
-                      type="range"
-                      min={-180}
-                      max={180}
-                      step={5}
-                      value={bearingDeg}
-                      onChange={(e) => setBearingDeg(Number(e.target.value))}
-                      className="w-28 accent-emerald-600"
-                    />
-                  </label>
+
+                  <div className="flex flex-wrap items-center gap-3 text-[11px] font-bold text-slate-700 dark:text-slate-200">
+                    <label className="flex items-center gap-1.5">
+                      <span>Girar:</span>
+                      <input
+                        type="range"
+                        min={-180}
+                        max={180}
+                        step={5}
+                        value={bearingDeg}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setBearingDeg(v);
+                          maplibreMapRef.current?.setBearing(v);
+                        }}
+                        className="w-20 accent-emerald-600 cursor-pointer"
+                      />
+                    </label>
+
+                    <label className="flex items-center gap-1.5">
+                      <span>Inclinar:</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={75}
+                        step={3}
+                        value={pitchDeg}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setPitchDeg(v);
+                          maplibreMapRef.current?.setPitch(v);
+                        }}
+                        className="w-20 accent-sky-600 cursor-pointer"
+                      />
+                    </label>
+
+                    <label className="flex items-center gap-1.5">
+                      <span>Altura 3D:</span>
+                      <input
+                        type="range"
+                        min={1}
+                        max={3.8}
+                        step={0.2}
+                        value={terrainExag}
+                        onChange={(e) => setTerrainExag(Number(e.target.value))}
+                        className="w-16 accent-amber-500 cursor-pointer"
+                      />
+                    </label>
+                  </div>
                 </div>
               </div>
             )}

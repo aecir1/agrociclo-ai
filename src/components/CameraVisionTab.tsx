@@ -2,6 +2,11 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { PropertyProfile } from '../types';
 import { ToggleSwitch } from './ToggleSwitch';
 import {
+  analyzeCacaoImageWithML,
+  DiagnosisClass,
+  VisionDiagnosisResult,
+} from '../ml/cacaoVisionClassifier';
+import {
   Camera,
   Upload,
   Video,
@@ -18,40 +23,6 @@ import {
 interface CameraVisionTabProps {
   profile: PropertyProfile;
   onUpdateProfile: (updated: PropertyProfile) => void;
-}
-
-type DiagnosisClass = 'saudavel' | 'estresse_hidrico' | 'vassoura_de_bruxa';
-
-interface ContourBox {
-  xPct: number;
-  yPct: number;
-  wPct: number;
-  hPct: number;
-  label: string;
-  severity: 'danger' | 'warning';
-}
-
-interface VisionDiagnosisResult {
-  predictedClass: DiagnosisClass;
-  title: string;
-  simpleSummary: string;
-  confidencePct: number;
-  probabilities: {
-    vassoura_de_bruxa: number;
-    estresse_hidrico: number;
-    saudavel: number;
-  };
-  metrics: {
-    greenIndexPct: number;
-    necrosisPct: number;
-    chlorosisPct: number;
-    cwsiPct: number;
-    affectedAreaPct: number;
-  };
-  fieldSteps: string[];
-  recommendedIrrigationAction: string;
-  contours: ContourBox[];
-  analysisSource: 'local' | 'server';
 }
 
 const SAMPLE_PRESETS: Array<{ id: DiagnosisClass; label: string; badgeClass: string }> = [
@@ -190,288 +161,6 @@ function renderSampleDataUrl(preset: DiagnosisClass): string {
   return canvas.toDataURL('image/png');
 }
 
-/**
- * Analisa espacialmente os pixels da imagem em uma grade 12x9 para localizar regiões afetadas
- * (manchas necróticas/vassoura-de-bruxa ou clorose/amarelecimento por seca) e gera contornos.
- */
-function analyzePixelsAndContours(
-  img: HTMLImageElement,
-  presetHint?: DiagnosisClass
-): VisionDiagnosisResult {
-  const sampleW = 240;
-  const sampleH = 180;
-  const canvas = document.createElement('canvas');
-  canvas.width = sampleW;
-  canvas.height = sampleH;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    throw new Error('Contexto 2D indisponível');
-  }
-  ctx.drawImage(img, 0, 0, sampleW, sampleH);
-  const { data } = ctx.getImageData(0, 0, sampleW, sampleH);
-
-  const cols = 12;
-  const rows = 9;
-  const cellW = sampleW / cols;
-  const cellH = sampleH / rows;
-
-  const cellNecrosis = Array.from({ length: rows }, () => Array(cols).fill(0));
-  const cellChlorosis = Array.from({ length: rows }, () => Array(cols).fill(0));
-  const cellCounts = Array.from({ length: rows }, () => Array(cols).fill(0));
-
-  let healthyGreen = 0;
-  let necroticBrown = 0;
-  let chloroticYellow = 0;
-  let foliagePixels = 0;
-  let exgSum = 0;
-
-  for (let y = 0; y < sampleH; y++) {
-    const gy = Math.min(rows - 1, Math.floor(y / cellH));
-    for (let x = 0; x < sampleW; x++) {
-      const gx = Math.min(cols - 1, Math.floor(x / cellW));
-      const idx = (y * sampleW + x) * 4;
-      const r = data[idx];
-      const g = data[idx + 1];
-      const b = data[idx + 2];
-
-      const brightness = (r + g + b) / 3;
-      if (brightness < 24 || brightness > 248) continue;
-
-      foliagePixels++;
-      cellCounts[gy][gx]++;
-
-      const exg = (2 * g - r - b) / 255;
-      exgSum += exg;
-
-      if (g > r * 1.07 && g > b * 1.12) {
-        healthyGreen++;
-      } else if (r > g * 1.08 && g > b * 1.28 && brightness > 95) {
-        chloroticYellow++;
-        cellChlorosis[gy][gx]++;
-      } else if (r > b * 1.1 && r >= g * 0.9 && brightness < 155) {
-        necroticBrown++;
-        cellNecrosis[gy][gx]++;
-      }
-    }
-  }
-
-  const denom = Math.max(foliagePixels, 1);
-  const necrosisFrac = necroticBrown / denom;
-  const chlorosisFrac = chloroticYellow / denom;
-  const greenFrac = healthyGreen / denom;
-  const avgExG = exgSum / denom;
-
-  // Scores baseados na assinatura cromática foliar
-  let rawVassoura = necrosisFrac * 2.5 + (necrosisFrac > 0.2 ? 0.35 : 0);
-  let rawSeca = chlorosisFrac * 2.4 + (avgExG < 0.04 ? 0.15 : 0);
-  let rawSaudavel = greenFrac * 1.9 + Math.max(0, avgExG) * 1.4;
-
-  // Se o produtor clicou em um exemplo explícito, reforça a calibração do exemplo sem falsificar análise real
-  if (presetHint === 'vassoura_de_bruxa') rawVassoura += 1.6;
-  if (presetHint === 'estresse_hidrico') rawSeca += 1.6;
-  if (presetHint === 'saudavel') rawSaudavel += 1.6;
-
-  const totalScore = Math.max(0.01, rawVassoura + rawSeca + rawSaudavel);
-  const probVassoura = Math.round((rawVassoura / totalScore) * 100);
-  const probSeca = Math.round((rawSeca / totalScore) * 100);
-  const probSaudavel = Math.max(0, 100 - probVassoura - probSeca);
-
-  let predictedClass: DiagnosisClass = 'saudavel';
-  if (probVassoura >= probSeca && probVassoura >= probSaudavel) {
-    predictedClass = 'vassoura_de_bruxa';
-  } else if (probSeca >= probVassoura && probSeca >= probSaudavel) {
-    predictedClass = 'estresse_hidrico';
-  }
-
-  // Agrupamento simples de células conectadas (contornos retangulares sobre as regiões afetadas)
-  const isTargetCell = (r: number, c: number) => {
-    const cnt = cellCounts[r][c];
-    if (cnt < 10) return false;
-    if (predictedClass === 'vassoura_de_bruxa') return cellNecrosis[r][c] / cnt >= 0.24;
-    if (predictedClass === 'estresse_hidrico') return cellChlorosis[r][c] / cnt >= 0.22;
-    return false;
-  };
-
-  const visited = Array.from({ length: rows }, () => Array(cols).fill(false));
-  const rawBoxes: Array<{ minC: number; maxC: number; minR: number; maxR: number; cells: number }> = [];
-
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (visited[r][c] || !isTargetCell(r, c)) continue;
-      const queue: Array<[number, number]> = [[r, c]];
-      visited[r][c] = true;
-      let minR = r, maxR = r, minC = c, maxC = c, cells = 0;
-
-      while (queue.length > 0) {
-        const [cr, cc] = queue.shift()!;
-        cells++;
-        minR = Math.min(minR, cr);
-        maxR = Math.max(maxR, cr);
-        minC = Math.min(minC, cc);
-        maxC = Math.max(maxC, cc);
-
-        for (const [dr, dc] of [
-          [-1, 0],
-          [1, 0],
-          [0, -1],
-          [0, 1],
-          [-1, -1],
-          [-1, 1],
-          [1, -1],
-          [1, 1],
-        ]) {
-          const nr = cr + dr;
-          const nc = cc + dc;
-          if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && !visited[nr][nc] && isTargetCell(nr, nc)) {
-            visited[nr][nc] = true;
-            queue.push([nr, nc]);
-          }
-        }
-      }
-
-      if (cells >= 2) {
-        rawBoxes.push({ minC, maxC, minR, maxR, cells });
-      }
-    }
-  }
-
-  rawBoxes.sort((a, b) => b.cells - a.cells);
-  const contours: ContourBox[] = rawBoxes.slice(0, 3).map((b, idx) => ({
-    xPct: Math.max(2, (b.minC / cols) * 100 - 2),
-    yPct: Math.max(2, (b.minR / rows) * 100 - 2),
-    wPct: Math.min(96, ((b.maxC - b.minC + 1) / cols) * 100 + 4),
-    hPct: Math.min(96, ((b.maxR - b.minR + 1) / rows) * 100 + 4),
-    label:
-      predictedClass === 'vassoura_de_bruxa'
-        ? idx === 0
-          ? 'Foco de Vassoura-de-Bruxa'
-          : 'Ramo Seco / Fungo'
-        : idx === 0
-          ? 'Folha com Falta de Água'
-          : 'Borda Amarelada',
-    severity: predictedClass === 'vassoura_de_bruxa' ? 'danger' : 'warning',
-  }));
-
-  // Se houver diagnóstico de risco mas nenhuma mancha grande fechou um bloco, marca região central estimada
-  if (contours.length === 0 && predictedClass !== 'saudavel') {
-    contours.push({
-      xPct: 24,
-      yPct: 18,
-      wPct: 52,
-      hPct: 60,
-      label:
-        predictedClass === 'vassoura_de_bruxa'
-          ? 'Sinais de Vassoura na Copa'
-          : 'Estresse Hídrico Foliar',
-      severity: predictedClass === 'vassoura_de_bruxa' ? 'danger' : 'warning',
-    });
-  }
-
-  const cwsi =
-    predictedClass === 'estresse_hidrico'
-      ? Math.min(96, Math.max(64, Math.round(chlorosisFrac * 180 + 45)))
-      : predictedClass === 'vassoura_de_bruxa'
-        ? Math.min(72, Math.round(necrosisFrac * 90 + 25))
-        : Math.max(8, Math.round((1 - greenFrac) * 35));
-
-  const affectedAreaPct =
-    predictedClass === 'vassoura_de_bruxa'
-      ? Math.round(necrosisFrac * 100)
-      : predictedClass === 'estresse_hidrico'
-        ? Math.round(chlorosisFrac * 100)
-        : 0;
-
-  if (predictedClass === 'vassoura_de_bruxa') {
-    return {
-      predictedClass,
-      title: 'ALERTA GRAVE: Vassoura-de-Bruxa Detectada!',
-      simpleSummary:
-        'Encontramos ramos secos, inchados ou em aglomerado típicos da Vassoura-de-Bruxa. Se molhar a copa por cima ou manter umidade alta, o fungo se espalha rápido para as árvores vizinhas.',
-      confidencePct: Math.max(probVassoura, 68),
-      probabilities: {
-        vassoura_de_bruxa: Math.max(probVassoura, 68),
-        estresse_hidrico: Math.min(probSeca, 24),
-        saudavel: Math.max(0, 100 - Math.max(probVassoura, 68) - Math.min(probSeca, 24)),
-      },
-      metrics: {
-        greenIndexPct: Math.max(0, Math.round(Math.max(0, avgExG) * 100)),
-        necrosisPct: Math.round(necrosisFrac * 100),
-        chlorosisPct: Math.round(chlorosisFrac * 100),
-        cwsiPct: cwsi,
-        affectedAreaPct,
-      },
-      fieldSteps: [
-        '1. Poda imediata: corte o ramo seco cerca de 20 cm abaixo da parte inchada ou doente.',
-        '2. Descarte seguro: não deixe o galho podado solto perto dos pés sadios; ensaque ou enterre longe.',
-        '3. Rega protegida: ative a Trava Anti-Vassoura para regar só na raiz à noite, deixando as folhas secas.',
-      ],
-      recommendedIrrigationAction:
-        'Ativar Trava Fitossanitária no talhão afetado e restringir o gotejamento à raiz (sem molhar folhas).',
-      contours,
-      analysisSource: 'local',
-    };
-  }
-
-  if (predictedClass === 'estresse_hidrico') {
-    return {
-      predictedClass,
-      title: 'Atenção: Folha com Sede (Estresse Hídrico)',
-      simpleSummary:
-        'As folhas estão amareladas e com bordas queimadas/enroladas. O cacaueiro fechou os poros para segurar água e pode abortar flores e bilros se não receber pulso extra na raiz.',
-      confidencePct: Math.max(probSeca, 65),
-      probabilities: {
-        vassoura_de_bruxa: Math.min(probVassoura, 20),
-        estresse_hidrico: Math.max(probSeca, 65),
-        saudavel: Math.max(0, 100 - Math.min(probVassoura, 20) - Math.max(probSeca, 65)),
-      },
-      metrics: {
-        greenIndexPct: Math.max(0, Math.round(Math.max(0, avgExG) * 100)),
-        necrosisPct: Math.round(necrosisFrac * 100),
-        chlorosisPct: Math.round(chlorosisFrac * 100),
-        cwsiPct: cwsi,
-        affectedAreaPct,
-      },
-      fieldSteps: [
-        '1. Aumentar gotejamento (+25%) neste talhão pelos próximos dias para recuperar a umidade da raiz.',
-        '2. Preferir ligar a bomba à noite (Tarifa Verde) para a água não evaporar antes de entrar no solo.',
-        '3. Cobrir o pé do cacau com folha seca ou palha de bananeira para segurar a umidade no chão.',
-      ],
-      recommendedIrrigationAction:
-        'Aumentar em +25% os litros por pé/dia neste talhão e checar se há gotejador entupido na linha.',
-      contours,
-      analysisSource: 'local',
-    };
-  }
-
-  return {
-    predictedClass,
-    title: 'Folha Saudável e Bem Hidratada',
-    simpleSummary:
-      'Cor verde firme, boa atividade foliar e nenhum sinal claro de Vassoura-de-Bruxa ou seca severa na imagem enviada.',
-    confidencePct: Math.max(probSaudavel, 72),
-    probabilities: {
-      vassoura_de_bruxa: Math.min(probVassoura, 14),
-      estresse_hidrico: Math.min(probSeca, 14),
-      saudavel: Math.max(probSaudavel, 72),
-    },
-    metrics: {
-      greenIndexPct: Math.max(15, Math.round(Math.max(0.15, avgExG) * 100)),
-      necrosisPct: Math.round(necrosisFrac * 100),
-      chlorosisPct: Math.round(chlorosisFrac * 100),
-      cwsiPct: cwsi,
-      affectedAreaPct: 0,
-    },
-    fieldSteps: [
-      '1. Manter o ritmo normal de gotejamento programado para este estágio da lavoura.',
-      '2. Fazer ronda semanal visual nos ramos novos em épocas mais úmidas.',
-    ],
-    recommendedIrrigationAction:
-      'Manter a irrigação normal programada sem gastar água extra neste talhão.',
-    contours: [],
-    analysisSource: 'local',
-  };
-}
-
 export const CameraVisionTab: React.FC<CameraVisionTabProps> = ({
   profile,
   onUpdateProfile,
@@ -586,10 +275,14 @@ export const CameraVisionTab: React.FC<CameraVisionTabProps> = ({
       const img = new Image();
       img.onload = async () => {
         try {
-          const localResult = analyzePixelsAndContours(img, presetHint);
+          const localResult = analyzeCacaoImageWithML(img, {
+            region: profile.id,
+            airHumidityPct: profile.weather.airHumidityPct,
+            presetHint,
+          });
           setDiagnosis(localResult);
 
-          // Se o servidor local Python estiver ligado, complementa apenas para fotos reais (sem travar nem limpar o estado local)
+          // Se o servidor local Python estiver ligado, complementa enviando os descritores reais extraídos da foto
           if (!presetHint) {
             const controller = new AbortController();
             const timer = window.setTimeout(() => controller.abort(), 350);
@@ -597,28 +290,47 @@ export const CameraVisionTab: React.FC<CameraVisionTabProps> = ({
               const res = await fetch('http://127.0.0.1:8000/api/analyze-leaf', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image_base64: dataUrl }),
+                body: JSON.stringify({
+                  region: profile.id,
+                  features: {
+                    exg_norm: localResult.features.exgMean,
+                    necrotic_ratio: localResult.features.broomBrownFrac,
+                    yellow_ratio: localResult.features.labBChlorosisFrac,
+                    texture_entropy: localResult.features.orientationEntropy,
+                    sobel_edge_density: localResult.features.sobelEdgeDensity,
+                    lab_a_ferruginous: localResult.features.labAPosFrac,
+                  },
+                }),
                 signal: controller.signal,
               });
               window.clearTimeout(timer);
               if (res.ok) {
                 const payload = await res.json();
                 if (payload?.probabilities) {
+                  const srvBroom = Number(
+                    payload.probabilities.vassoura_de_bruxa ?? localResult.probabilities.vassoura_de_bruxa
+                  );
+                  const srvDrought = Number(
+                    payload.probabilities.estresse_hidrico ?? localResult.probabilities.estresse_hidrico
+                  );
+                  const srvHealthy = Number(
+                    payload.probabilities.saudavel_hidratado ??
+                      payload.probabilities.saudavel ??
+                      localResult.probabilities.saudavel
+                  );
+                  const blendedBroom = Math.round(localResult.probabilities.vassoura_de_bruxa * 0.65 + srvBroom * 0.35);
+                  const blendedDrought = Math.round(localResult.probabilities.estresse_hidrico * 0.65 + srvDrought * 0.35);
+                  const blendedHealthy = Math.max(0, 100 - blendedBroom - blendedDrought || Math.round(srvHealthy));
+
                   setDiagnosis((prev) =>
                     prev
                       ? {
                           ...prev,
                           analysisSource: 'server',
                           probabilities: {
-                            vassoura_de_bruxa: Math.round(
-                              (payload.probabilities.vassoura_de_bruxa ?? prev.probabilities.vassoura_de_bruxa / 100) * 100
-                            ),
-                            estresse_hidrico: Math.round(
-                              (payload.probabilities.estresse_hidrico ?? prev.probabilities.estresse_hidrico / 100) * 100
-                            ),
-                            saudavel: Math.round(
-                              (payload.probabilities.saudavel ?? prev.probabilities.saudavel / 100) * 100
-                            ),
+                            vassoura_de_bruxa: blendedBroom,
+                            estresse_hidrico: blendedDrought,
+                            saudavel: blendedHealthy,
                           },
                         }
                       : prev
@@ -640,7 +352,7 @@ export const CameraVisionTab: React.FC<CameraVisionTabProps> = ({
       };
       img.src = dataUrl;
     },
-    []
+    [profile.id, profile.weather.airHumidityPct]
   );
 
   // Carrega exemplo padrão na primeira abertura para mostrar imediatamente como funciona
@@ -1166,43 +878,76 @@ export const CameraVisionTab: React.FC<CameraVisionTabProps> = ({
 
               {/* DETALHES TÉCNICOS ESCONDIDOS POR PADRÃO (ABRE NO SWITCH) */}
               {showTechDetails && (
-                <div className="bg-slate-900 dark:bg-slate-950 text-slate-100 rounded-2xl border border-slate-700 p-5 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h4 className="font-bold text-sm flex items-center gap-2 text-sky-300">
-                      <SlidersHorizontal className="w-4 h-4" />
-                      Dados Técnicos da Leitura da Imagem
-                    </h4>
+                <div className="bg-slate-900 dark:bg-slate-950 text-slate-100 rounded-2xl border border-slate-700 p-5 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="font-bold text-sm flex items-center gap-2 text-sky-300">
+                        <SlidersHorizontal className="w-4 h-4" />
+                        Dados Técnicos do Modelo ML
+                      </h4>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        {diagnosis.modelInfo.architecture}
+                      </p>
+                    </div>
                     <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300">
-                      Motor: {diagnosis.analysisSource === 'server' ? 'Python OpenCV/Local' : 'Análise Local no Aparelho'}
+                      Motor: {diagnosis.analysisSource === 'server' ? 'Python + Local Ensemble' : 'Inferência Local 12D'}
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                    <div className="bg-slate-800/80 rounded-xl p-3">
-                      <span className="text-slate-400 block">Verde Sadio (ExG)</span>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
+                    <div className="bg-slate-800/80 rounded-xl p-2.5">
+                      <span className="text-slate-400 block text-[11px]">Verde Sadio (ExG)</span>
                       <span className="text-base font-black text-emerald-400">
                         {diagnosis.metrics.greenIndexPct}%
                       </span>
                     </div>
-                    <div className="bg-slate-800/80 rounded-xl p-3">
-                      <span className="text-slate-400 block">Mancha Escura / Necrose</span>
+                    <div className="bg-slate-800/80 rounded-xl p-2.5">
+                      <span className="text-slate-400 block text-[11px]">Tecido Necrótico</span>
                       <span className="text-base font-black text-rose-400">
                         {diagnosis.metrics.necrosisPct}%
                       </span>
                     </div>
-                    <div className="bg-slate-800/80 rounded-xl p-3">
-                      <span className="text-slate-400 block">Amarelecimento (Clorose)</span>
+                    <div className="bg-slate-800/80 rounded-xl p-2.5">
+                      <span className="text-slate-400 block text-[11px]">Ramos Sobel</span>
+                      <span className="text-base font-black text-rose-300">
+                        {diagnosis.metrics.edgeDensityPct}%
+                      </span>
+                    </div>
+                    <div className="bg-slate-800/80 rounded-xl p-2.5">
+                      <span className="text-slate-400 block text-[11px]">Entropia Textural</span>
+                      <span className="text-base font-black text-fuchsia-300">
+                        {diagnosis.metrics.textureEntropyPct}%
+                      </span>
+                    </div>
+                    <div className="bg-slate-800/80 rounded-xl p-2.5">
+                      <span className="text-slate-400 block text-[11px]">Clorose CIELAB b*</span>
                       <span className="text-base font-black text-amber-400">
                         {diagnosis.metrics.chlorosisPct}%
                       </span>
                     </div>
-                    <div className="bg-slate-800/80 rounded-xl p-3">
-                      <span className="text-slate-400 block">Índice de Sede (CWSI)</span>
+                    <div className="bg-slate-800/80 rounded-xl p-2.5">
+                      <span className="text-slate-400 block text-[11px]">Índice Sede (CWSI)</span>
                       <span className="text-base font-black text-sky-400">
                         {diagnosis.metrics.cwsiPct}%
                       </span>
                     </div>
                   </div>
+
+                  {diagnosis.modelInfo.decisionNotes.length > 0 && (
+                    <div className="pt-2 border-t border-slate-800 space-y-1">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                        Evidências que pesaram na decisão do modelo:
+                      </span>
+                      <ul className="space-y-1 text-xs text-slate-300">
+                        {diagnosis.modelInfo.decisionNotes.map((note, idx) => (
+                          <li key={idx} className="flex items-start gap-1.5">
+                            <span className="text-emerald-400 font-bold">•</span>
+                            <span>{note}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               )}
             </>

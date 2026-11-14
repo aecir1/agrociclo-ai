@@ -28,6 +28,7 @@ import {
   MoreHorizontal,
   Bell,
   BellOff,
+  BarChart3,
 } from 'lucide-react';
 import { INITIAL_PROFILES } from './data/mockProfiles';
 import { PropertyProfile, RegionId } from './types';
@@ -42,6 +43,7 @@ import { FarmMap2D3D } from './components/FarmMap2D3D';
 import { CityWeatherForecast } from './components/CityWeatherForecast';
 import { ToggleSwitch } from './components/ToggleSwitch';
 import { AppTourOverlay, TourTabId } from './components/AppTourOverlay';
+import { WaterReserve3DPopup } from './components/WaterReserve3DPopup';
 
 type NavTab = TourTabId;
 
@@ -84,6 +86,7 @@ export function App() {
   const [isTourOpen, setIsTourOpen] = useState(false);
   const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
   const [isMobilePreview, setIsMobilePreview] = useState(false);
+  const [isWater3DPopupOpen, setIsWater3DPopupOpen] = useState(false);
 
   // Botão Switch no card do clima no topo do Início (abre/fecha previsão por turnos e semana)
   const [showHomeForecast, setShowHomeForecast] = useState(false);
@@ -859,10 +862,24 @@ export function App() {
                       {/* Headline de Dopamina + Comparação Simples (8 cols) */}
                       <div className="sm:col-span-8 space-y-4">
                         <div>
-                          <div
-                            className={`text-3xl sm:text-4xl font-black tracking-tight leading-none ${autonomyTone.numberClass}`}
-                          >
-                            Sua água dura {realAutonomyDays} dias
+                          <div className="flex items-start justify-between gap-2.5">
+                            <div
+                              className={`text-3xl sm:text-4xl font-black tracking-tight leading-none ${autonomyTone.numberClass}`}
+                            >
+                              Sua água dura {realAutonomyDays} dias
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setIsWater3DPopupOpen(true)}
+                              title="Ver gráficos detalhados e modelo 3D da água"
+                              aria-label="Ver gráficos detalhados e modelo 3D da água"
+                              className="w-10 h-10 rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50 hover:bg-sky-100 dark:bg-sky-950/60 dark:hover:bg-sky-900/70 text-sky-700 dark:text-sky-300 flex flex-col items-center justify-center shrink-0 shadow-xs transition cursor-pointer group"
+                            >
+                              <BarChart3 className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                              <span className="text-[8px] font-black leading-none tracking-tight mt-0.5">
+                                3D
+                              </span>
+                            </button>
                           </div>
                           <p className="text-sm font-semibold text-slate-600 dark:text-slate-300 mt-1.5">
                             No gotejamento você ganha{' '}
@@ -1481,6 +1498,22 @@ export function App() {
         isOpen={isTourOpen}
         onClose={() => setIsTourOpen(false)}
         onNavigateTab={handleSelectTab}
+      />
+
+      <WaterReserve3DPopup
+        isOpen={isWater3DPopupOpen}
+        onClose={() => setIsWater3DPopupOpen(false)}
+        profile={currentProfile}
+        totalNominalM3={totalNominalM3}
+        totalApparentM3={totalApparentM3}
+        totalRealM3={totalRealM3}
+        siltationHiddenM3={siltationHiddenM3}
+        dailyDemandM3={dailyDemandM3}
+        sprinklerDailyM3={sprinklerDailyM3}
+        realAutonomyDays={realAutonomyDays}
+        sprinklerAutonomyDays={sprinklerAutonomyDays}
+        autonomyGainDays={autonomyGainDays}
+        rain40mmLiters={rain40mmLiters}
       />
     </div>
   );

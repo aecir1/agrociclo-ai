@@ -33,11 +33,11 @@ class CacaoHydroMLClassifier:
 
     def __init__(self):
         # Protótipos treinados (média e desvio-padrão das features em cada classe)
-        # Ordem das features: [exg_norm, necrotic_ratio, yellow_ratio, texture_entropy]
+        # Ordem das features: [exg_norm, necrotic_ratio, yellow_ratio, texture_entropy, sobel_edge_density, lab_a_ferruginous]
         self.training_prototypes = {
             "vassoura_de_bruxa": {
-                "mean": [0.12, 0.42, 0.18, 0.78],
-                "std": [0.10, 0.12, 0.08, 0.12],
+                "mean": [0.10, 0.34, 0.14, 0.76, 0.34, 0.28],
+                "std": [0.12, 0.14, 0.09, 0.13, 0.12, 0.12],
                 "label": "Alerta Fitossanitário: Padrão de Vassoura-de-Bruxa (Moniliophthora perniciosa)",
                 "water_relation": "ALTA RELAÇÃO HÍDRICA: O fungo germina quando há água livre na copa e umidade > 85%.",
                 "irrigation_command": "ATIVAR TRAVA ANTI-VASSOURA: Suspender qualquer rega diurna ou microaspersão. Manter exclusivamente gotejamento sub-copa noturno (-20% lâmina) para secar o microclima.",
@@ -45,8 +45,8 @@ class CacaoHydroMLClassifier:
                 "lock_anti_witches_broom": True
             },
             "estresse_hidrico": {
-                "mean": [0.18, 0.22, 0.44, 0.55],
-                "std": [0.10, 0.10, 0.12, 0.12],
+                "mean": [0.16, 0.16, 0.42, 0.54, 0.22, 0.12],
+                "std": [0.11, 0.10, 0.13, 0.13, 0.10, 0.08],
                 "label": "Alerta Hídrico: Estresse Hídrico Foliar / Déficit Radicular Detectado",
                 "water_relation": "DÉFICIT HÍDRICO DIRETO: Amarelamento e queima marginal indicam que a tensão de água no solo ultrapassou 20 kPa na zona radicular (0-20 cm).",
                 "irrigation_command": "AUMENTAR PULSO DE GOTEJAMENTO (+25%): Aplicar pulso extra na janela da Tarifa Verde (21h30) e reforçar cobertura morta com pseudocaule de bananeira.",
@@ -54,8 +54,8 @@ class CacaoHydroMLClassifier:
                 "lock_anti_witches_broom": False
             },
             "saudavel_hidratado": {
-                "mean": [0.58, 0.05, 0.08, 0.32],
-                "std": [0.12, 0.06, 0.06, 0.10],
+                "mean": [0.48, 0.05, 0.07, 0.34, 0.15, 0.04],
+                "std": [0.14, 0.06, 0.06, 0.12, 0.09, 0.05],
                 "label": "Planta Saudável: Turgor Foliar e Hidratação Radicular Ideais",
                 "water_relation": "EQUILÍBRIO HÍDRICO: Folhas túrgidas e alto índice de verde ativo (ExG) sem sinais de fungos hidrofílicos.",
                 "irrigation_command": "MANTER LÂMINA ECONÔMICA PADRÃO (100%): Seguir cronograma de gotejamento localizado sem desperdício.",
@@ -70,6 +70,8 @@ class CacaoHydroMLClassifier:
             float(features.get("necrotic_ratio", 0.1)),
             float(features.get("yellow_ratio", 0.1)),
             float(features.get("texture_entropy", 0.4)),
+            float(features.get("sobel_edge_density", 0.2)),
+            float(features.get("lab_a_ferruginous", 0.1)),
         ]
 
         scores: Dict[str, float] = {}
