@@ -48,7 +48,7 @@ const BAHIA_PRESETS: Array<{ label: string; lat: number; lon: number }> = [
   { label: 'Barreiras (Oeste)', lat: -12.1528, lon: -44.9901 },
 ];
 
-type LeafletLayerStyle = 'satellite' | 'streets' | 'topo';
+type LeafletLayerStyle = 'satellite' | 'topo';
 type MapEngineMode = 'leaflet' | 'relief3d';
 
 const LEAFLET_TILE_PROVIDERS: Record<
@@ -59,11 +59,6 @@ const LEAFLET_TILE_PROVIDERS: Record<
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Tiles © Esri',
     maxZoom: 18,
-  },
-  streets: {
-    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '© OpenStreetMap',
-    maxZoom: 19,
   },
   topo: {
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
@@ -82,11 +77,6 @@ const MAPLIBRE_BASE_TILES: Record<
     ],
     attribution: 'Esri World Imagery',
     maxzoom: 18,
-  },
-  streets: {
-    tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-    attribution: '© OpenStreetMap contributors',
-    maxzoom: 19,
   },
   topo: {
     tiles: [
@@ -1148,17 +1138,6 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
             >
               <Satellite className="w-3.5 h-3.5" />
               Satélite
-            </button>
-            <button
-              type="button"
-              onClick={() => setLayerStyle('streets')}
-              className={`px-2.5 py-1.5 rounded-lg cursor-pointer ${
-                layerStyle === 'streets'
-                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400'
-              }`}
-            >
-              Ruas
             </button>
             <button
               type="button"
