@@ -127,6 +127,11 @@ export function App() {
     return stored;
   });
 
+  const [farmerName, setFarmerName] = useState<string | null>(() => {
+    const stored = localStorage.getItem('agrociclo_owner_name');
+    return stored && stored.trim() ? stored.trim() : null;
+  });
+
   const [profiles, setProfiles] = useState<Record<RegionId, PropertyProfile>>(() => {
     const saved = localStorage.getItem('agrociclo_profiles_v1');
     if (saved) {
@@ -151,6 +156,14 @@ export function App() {
     localStorage.setItem('agrociclo_brand_name', brandName);
   }, [brandName]);
 
+  useEffect(() => {
+    if (farmerName) {
+      localStorage.setItem('agrociclo_owner_name', farmerName);
+    } else {
+      localStorage.removeItem('agrociclo_owner_name');
+    }
+  }, [farmerName]);
+
   const currentProfile = profiles[activeRegion];
 
   const handleUpdateCurrentProfile = (updated: PropertyProfile) => {
@@ -161,11 +174,17 @@ export function App() {
   };
 
   // Ao finalizar o cadastro da fazenda, salva tudo e dispara o Tour Guiado na tela automaticamente!
-  const handleApplyNewFarmFromWizard = (region: RegionId, newProfile: PropertyProfile) => {
+  const handleApplyNewFarmFromWizard = (
+    region: RegionId,
+    newProfile: PropertyProfile,
+    ownerName?: string
+  ) => {
     setProfiles((prev) => ({
       ...prev,
       [region]: newProfile,
     }));
+    const cleanOwner = (ownerName || '').trim() || newProfile.name;
+    setFarmerName(cleanOwner);
     setActiveRegion(region);
     setActiveTab('overview');
     window.setTimeout(() => {
@@ -175,7 +194,9 @@ export function App() {
 
   const handleResetProfiles = () => {
     setProfiles(INITIAL_PROFILES);
+    setFarmerName(null);
     localStorage.removeItem('agrociclo_profiles_v1');
+    localStorage.removeItem('agrociclo_owner_name');
   };
 
   const handleSelectTab = (tab: NavTab) => {
@@ -363,20 +384,20 @@ export function App() {
     >
       {/* BARRA LATERAL ESQUERDA (APENAS DESKTOP) */}
       {!isMobilePreview && (
-        <aside className="hidden lg:flex w-64 bg-white dark:bg-[#111827] border-r border-slate-200/80 dark:border-slate-800 flex-col justify-between shrink-0">
+        <aside className="hidden lg:flex w-64 bg-[#0B2218] dark:bg-[#081510] text-emerald-50 border-r border-emerald-950/80 flex-col justify-between shrink-0">
           <div className="p-4 space-y-5 overflow-y-auto">
             {/* Logo */}
             <div className="flex items-center justify-between px-1 pt-1">
               <div className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-sm">
+                <div className="w-10 h-10 rounded-xl bg-emerald-600/90 border border-emerald-400/30 text-white flex items-center justify-center shadow-sm">
                   <Droplets className="w-5 h-5" />
                 </div>
                 <div>
-                  <h1 className="font-extrabold text-base tracking-tight text-slate-900 dark:text-white leading-tight">
+                  <h1 className="font-extrabold text-base tracking-tight text-white leading-tight">
                     {brandName}
                   </h1>
-                  <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
-                    Cacau & Água na Bahia
+                  <p className="text-[11px] font-semibold text-emerald-300/80">
+                    Cacau e água na Bahia
                   </p>
                 </div>
               </div>
@@ -385,11 +406,11 @@ export function App() {
             {/* Seletor de Região */}
             <div
               data-tour="sidebar-region"
-              className="bg-slate-50 dark:bg-slate-800/70 p-2.5 rounded-2xl border border-slate-200/80 dark:border-slate-700 space-y-2"
+              className="bg-white/5 p-2.5 rounded-2xl border border-white/10 space-y-2"
             >
-              <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400 px-1 flex items-center justify-between">
-                <span>Sua Região</span>
-                <span className="text-emerald-700 dark:text-emerald-400 truncate max-w-[110px]">
+              <div className="text-[11px] font-bold text-emerald-200/75 px-1 flex items-center justify-between">
+                <span>Região</span>
+                <span className="text-emerald-300 truncate max-w-[110px]">
                   {currentProfile.municipality}
                 </span>
               </div>
@@ -399,8 +420,8 @@ export function App() {
                   onClick={() => setActiveRegion('ilheus')}
                   className={`py-2 px-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                     activeRegion === 'ilheus'
-                      ? 'bg-emerald-600 text-white shadow-sm'
-                      : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      ? 'bg-white text-[#0B2218] shadow-sm'
+                      : 'bg-white/5 text-emerald-100/80 border border-white/10 hover:bg-white/10'
                   }`}
                 >
                   Ilhéus (Sul)
@@ -410,8 +431,8 @@ export function App() {
                   onClick={() => setActiveRegion('oeste')}
                   className={`py-2 px-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                     activeRegion === 'oeste'
-                      ? 'bg-amber-500 text-white shadow-sm'
-                      : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      ? 'bg-amber-400 text-slate-950 shadow-sm'
+                      : 'bg-white/5 text-emerald-100/80 border border-white/10 hover:bg-white/10'
                   }`}
                 >
                   Oeste Baiano
@@ -421,7 +442,7 @@ export function App() {
 
             {/* Menu Principal */}
             <div className="space-y-1">
-              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-2 pb-1">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-300/50 px-2 pb-1">
                 Principal
               </div>
               {primaryNavItems.map((item) => {
@@ -434,20 +455,20 @@ export function App() {
                     onClick={() => handleSelectTab(item.id)}
                     className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
                       isActive
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : 'text-slate-700 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-slate-800 hover:text-emerald-900 dark:hover:text-white'
+                        ? 'bg-white/15 text-white border border-white/15 shadow-sm'
+                        : 'text-emerald-100/75 hover:bg-white/10 hover:text-white'
                     }`}
                   >
                     <span className="flex items-center gap-2.5">
                       <Icon
                         className={`w-4 h-4 ${
-                          isActive ? 'text-white' : 'text-slate-500 dark:text-slate-400'
+                          isActive ? 'text-emerald-300' : 'text-emerald-300/60'
                         }`}
                       />
                       <span>{item.label}</span>
                     </span>
                     {item.badge && (
-                      <span className="w-2.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-white dark:ring-slate-900" />
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-[#0B2218]" />
                     )}
                   </button>
                 );
@@ -456,8 +477,8 @@ export function App() {
 
             {/* Menu Ferramentas */}
             <div className="space-y-1">
-              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-2 pb-1">
-                Saúde & Crédito
+              <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-300/50 px-2 pb-1">
+                Saúde &amp; Crédito
               </div>
               {secondaryNavItems.map((item) => {
                 const Icon = item.icon;
@@ -469,13 +490,13 @@ export function App() {
                     onClick={() => handleSelectTab(item.id)}
                     className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
                       isActive
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : 'text-slate-700 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-slate-800 hover:text-emerald-900 dark:hover:text-white'
+                        ? 'bg-white/15 text-white border border-white/15 shadow-sm'
+                        : 'text-emerald-100/75 hover:bg-white/10 hover:text-white'
                     }`}
                   >
                     <Icon
                       className={`w-4 h-4 ${
-                        isActive ? 'text-white' : 'text-slate-500 dark:text-slate-400'
+                        isActive ? 'text-emerald-300' : 'text-emerald-300/60'
                       }`}
                     />
                     <span>{item.label}</span>
@@ -486,32 +507,32 @@ export function App() {
           </div>
 
           {/* Rodapé da Sidebar */}
-          <div className="p-4 border-t border-slate-200/80 dark:border-slate-800 space-y-2">
+          <div className="p-4 border-t border-white/10 space-y-1.5">
             <button
               type="button"
               onClick={() => setIsTourOpen(true)}
-              className="w-full py-2.5 px-3 rounded-xl bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 dark:hover:bg-amber-900/60 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full py-2 px-3 rounded-xl hover:bg-white/10 text-emerald-200/90 hover:text-white font-semibold text-xs flex items-center gap-2 cursor-pointer transition"
             >
-              <Compass className="w-4 h-4" />
-              Tour Guiado na Tela
+              <Compass className="w-4 h-4 text-emerald-300" />
+              Tour guiado na tela
             </button>
 
             <button
               type="button"
               onClick={() => setIsTutorialOpen(true)}
-              className="w-full py-2.5 px-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full py-2 px-3 rounded-xl hover:bg-white/10 text-emerald-200/90 hover:text-white font-semibold text-xs flex items-center gap-2 cursor-pointer transition"
             >
-              <HelpCircle className="w-4 h-4" />
-              Tutorial & Dicionário
+              <HelpCircle className="w-4 h-4 text-emerald-300" />
+              Tutorial e dicionário
             </button>
 
             <button
               type="button"
               onClick={handleResetProfiles}
-              className="w-full py-2 px-3 rounded-xl text-xs font-semibold text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center gap-1.5 cursor-pointer"
+              className="w-full py-2 px-3 rounded-xl text-xs font-medium text-emerald-200/60 hover:text-white hover:bg-white/10 flex items-center gap-2 cursor-pointer transition"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              Restaurar Padrão
+              Restaurar dados de exemplo
             </button>
           </div>
         </aside>
@@ -603,23 +624,39 @@ export function App() {
                 </button>
               )}
 
-              <button
-                type="button"
-                onClick={() => setIsWizardOpen(true)}
-                className={`${
-                  isMobilePreview ? 'px-2.5 py-2 text-[11px]' : 'px-3 sm:px-3.5 py-2 text-xs'
-                } rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-extrabold inline-flex items-center gap-1 shadow-sm cursor-pointer`}
-              >
-                <UserPlus className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                {isMobilePreview ? (
-                  <span>+ Fazenda</span>
-                ) : (
-                  <>
-                    <span className="sm:hidden">+ Fazenda</span>
-                    <span className="hidden sm:inline">+ Cadastrar Fazenda</span>
-                  </>
-                )}
-              </button>
+              {farmerName ? (
+                <button
+                  type="button"
+                  onClick={() => setIsWizardOpen(true)}
+                  title="Editar cadastro ou cadastrar nova fazenda"
+                  className={`${
+                    isMobilePreview ? 'px-2.5 py-1.5 text-[11px]' : 'px-3 py-1.5 text-xs'
+                  } rounded-xl bg-[#164A33] hover:bg-[#1C5B3F] text-white font-bold inline-flex items-center gap-2 shadow-sm cursor-pointer transition`}
+                >
+                  <span className="w-6 h-6 rounded-full bg-emerald-700/80 border border-emerald-400/30 flex items-center justify-center text-[11px] font-extrabold uppercase shrink-0">
+                    {farmerName.trim().charAt(0)}
+                  </span>
+                  <span className="truncate max-w-[120px] sm:max-w-[160px]">{farmerName}</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setIsWizardOpen(true)}
+                  className={`${
+                    isMobilePreview ? 'px-2.5 py-2 text-[11px]' : 'px-3 sm:px-3.5 py-2 text-xs'
+                  } rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-extrabold inline-flex items-center gap-1 shadow-sm cursor-pointer`}
+                >
+                  <UserPlus className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  {isMobilePreview ? (
+                    <span>+ Fazenda</span>
+                  ) : (
+                    <>
+                      <span className="sm:hidden">+ Fazenda</span>
+                      <span className="hidden sm:inline">+ Cadastrar Fazenda</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           </div>
 
@@ -676,6 +713,17 @@ export function App() {
           <div className="max-w-7xl mx-auto">
             {activeTab === 'overview' && (
               <div className="space-y-5 sm:space-y-6">
+                {farmerName && (
+                  <div className="pt-0.5">
+                    <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+                      Olá, {farmerName}! Seja bem-vindo ao {brandName}
+                    </h2>
+                    <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+                      Acompanhe as condições hídricas da sua região
+                    </p>
+                  </div>
+                )}
+
                 {/* ALERTA DE PROBLEMA NO TOPO DA TELA INICIAL (EQUILIBRADO + OPÇÃO DE DESLIGAR) */}
                 {topUrgentAlert && !alertsEnabled && (
                   <div className="flex items-center justify-between gap-3 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/70 text-xs">
@@ -689,7 +737,7 @@ export function App() {
                     <button
                       type="button"
                       onClick={() => setAlertsEnabled(true)}
-                      className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold inline-flex items-center gap-1 cursor-pointer transition shrink-0"
+                      className="px-3 py-1 rounded-lg bg-[#164A33] hover:bg-[#1C5B3F] text-white font-bold inline-flex items-center gap-1 cursor-pointer transition shrink-0"
                     >
                       <Bell className="w-3 h-3" />
                       <span>Ligar alertas</span>
@@ -946,7 +994,7 @@ export function App() {
                           <button
                             type="button"
                             onClick={() => handleSelectTab('simulator')}
-                            className="px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-sm cursor-pointer"
+                            className="px-4 py-2 rounded-xl bg-[#164A33] hover:bg-[#1C5B3F] text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-sm cursor-pointer transition"
                           >
                             Testar Cenário de Seca
                             <ArrowRight className="w-3.5 h-3.5" />
@@ -959,7 +1007,7 @@ export function App() {
                   {/* Direita (5 cols): Cartão Verde Clima Agora + Switch Direto no Topo */}
                   <div
                     data-tour="home-weather-switch"
-                    className="lg:col-span-5 rounded-2xl bg-gradient-to-br from-emerald-700 via-emerald-800 to-teal-900 dark:from-emerald-900 dark:via-emerald-950 dark:to-slate-950 text-white p-5 sm:p-6 shadow-md border border-emerald-600/40 flex flex-col justify-between gap-5"
+                    className="lg:col-span-5 rounded-2xl bg-gradient-to-br from-[#0F3323] via-[#133D2A] to-[#0B2318] dark:from-[#0B2318] dark:via-[#081A12] dark:to-slate-950 text-white p-5 sm:p-6 shadow-md border border-emerald-900/40 flex flex-col justify-between gap-5"
                   >
                     <div className="space-y-4">
                       <div className="flex items-start justify-between gap-2">

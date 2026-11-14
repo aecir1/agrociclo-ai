@@ -15,7 +15,7 @@ import { PropertyProfile, PhenologicalStage, RegionId } from '../types';
 interface FarmerSetupWizardProps {
   isOpen: boolean;
   onClose: () => void;
-  onApplyNewFarm: (region: RegionId, newProfile: PropertyProfile) => void;
+  onApplyNewFarm: (region: RegionId, newProfile: PropertyProfile, ownerName?: string) => void;
 }
 
 export const FarmerSetupWizard: React.FC<FarmerSetupWizardProps> = ({
@@ -26,6 +26,7 @@ export const FarmerSetupWizard: React.FC<FarmerSetupWizardProps> = ({
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
   // Step 1: Farm & Cocoa
+  const [ownerName, setOwnerName] = useState('Aecio');
   const [farmName, setFarmName] = useState('Sítio Boa Esperança do Cacau');
   const [municipality, setMunicipality] = useState('Ilhéus');
   const [regionType, setRegionType] = useState<RegionId>('ilheus');
@@ -296,7 +297,7 @@ export const FarmerSetupWizard: React.FC<FarmerSetupWizardProps> = ({
             ]
     };
 
-    onApplyNewFarm(regionType, newProfile);
+    onApplyNewFarm(regionType, newProfile, ownerName.trim() || 'Produtor');
     setStep(1);
     onClose();
   };
@@ -341,6 +342,16 @@ export const FarmerSetupWizard: React.FC<FarmerSetupWizardProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Seu Nome (Produtor)
+                  </label>
+                  <input
+                    type="text"
+                    value={ownerName}
+                    onChange={(e) => setOwnerName(e.target.value)}
+                    placeholder="Ex: Aecio"
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 font-bold text-slate-900 mb-3"
+                  />
                   <label className="block text-xs font-bold text-slate-700 mb-1">
                     Qual o nome da sua Fazenda / Sítio?
                   </label>

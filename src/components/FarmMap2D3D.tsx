@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import maplibregl from 'maplibre-gl';
@@ -6,6 +6,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import {
   MapPin,
   Undo2,
+  Redo2,
   Trash2,
   CheckCircle2,
   RotateCcw,
@@ -194,7 +195,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
 
   const [engineMode, setEngineMode] = useState<MapEngineMode>('leaflet');
   const [layerStyle, setLayerStyle] = useState<LeafletLayerStyle>('satellite');
-  const [drawingMode, setDrawingMode] = useState<boolean>(true);
+  const [drawingMode, setDrawingMode] = useState<boolean>(false);
   const [showRunoffArrows, setShowRunoffArrows] = useState<boolean>(true);
   const [showManualCoords, setShowManualCoords] = useState<boolean>(false);
   const [latInput, setLatInput] = useState<string>(String(originLat));
@@ -232,6 +233,122 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
   drawingModeRef.current = drawingMode;
   const onUpdateProfileRef = useRef(onUpdateProfile);
   onUpdateProfileRef.current = onUpdateProfile;
+
+  // Histórico de desfazer/refazer (Ctrl+Z / Ctrl+Y) dos vértices/arestas da fazenda
+  const undoStackRef = useRef<LatLonPoint[][]>([]);
+  const redoStackRef = useRef<LatLonPoint[][]>([]);
+  const [historyState, setHistoryState] = useState<{ canUndo: boolean; canRedo: boolean }>({
+    canUndo: false,
+    canRedo: false,
+  });
+
+  const syncHistoryState = useCallback(() => {
+    setHistoryState({
+      canUndo: undoStackRef.current.length > 0,
+      canRedo: redoStackRef.current.length > 0,
+    });
+  }, []);
+
+  useEffect(() => {
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    syncHistoryState();
+  }, [profile.id, syncHistoryState]);
+
+  const commitVertices = useCallback(
+    (nextVerts: LatLonPoint[]) => {
+      const curr = profileRef.current;
+      const prevVerts = (curr.polygonVertices ?? []).map((p) => ({ ...p }));
+      undoStackRef.current = [...undoStackRef.current.slice(-49), prevVerts];
+      redoStackRef.current = [];
+      syncHistoryState();
+      onUpdateProfileRef.current({
+        ...curr,
+        polygonVertices: nextVerts,
+      });
+    },
+    [syncHistoryState],
+  );
+  const commitVerticesRef = useRef(commitVertices);
+  commitVerticesRef.current = commitVertices;
+
+  const handleUndo = useCallback(() => {
+    const curr = profileRef.current;
+    const currentVerts = (curr.polygonVertices ?? []).map((p) => ({ ...p }));
+    if (undoStackRef.current.length > 0) {
+      const previous = undoStackRef.current[undoStackRef.current.length - 1];
+      undoStackRef.current = undoStackRef.current.slice(0, -1);
+      redoStackRef.current = [...redoStackRef.current.slice(-49), currentVerts];
+      syncHistoryState();
+      onUpdateProfileRef.current({
+        ...curr,
+        polygonVertices: previous.map((p) => ({ ...p })),
+      });
+      return;
+    }
+    if (currentVerts.length > 0) {
+      redoStackRef.current = [...redoStackRef.current.slice(-49), currentVerts];
+      syncHistoryState();
+      onUpdateProfileRef.current({
+        ...curr,
+        polygonVertices: currentVerts.slice(0, -1),
+      });
+    }
+  }, [syncHistoryState]);
+
+  const handleRedo = useCallback(() => {
+    if (redoStackRef.current.length === 0) return;
+    const curr = profileRef.current;
+    const currentVerts = (curr.polygonVertices ?? []).map((p) => ({ ...p }));
+    const next = redoStackRef.current[redoStackRef.current.length - 1];
+    redoStackRef.current = redoStackRef.current.slice(0, -1);
+    undoStackRef.current = [...undoStackRef.current.slice(-49), currentVerts];
+    syncHistoryState();
+    onUpdateProfileRef.current({
+      ...curr,
+      polygonVertices: next.map((p) => ({ ...p })),
+    });
+  }, [syncHistoryState]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const k = e.key.toLowerCase();
+        if (k === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((k === 'z' && e.shiftKey) || k === 'y') {
+          e.preventDefault();
+          handleRedo();
+        }
+      } else if (e.key === 'Escape' && drawingModeRef.current) {
+        setDrawingMode(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleUndo, handleRedo]);
+
+  useEffect(() => {
+    const leafletEl = leafletMapRef.current?.getContainer();
+    if (leafletEl) {
+      leafletEl.style.cursor = drawingMode ? 'crosshair' : '';
+    }
+    const maplibreCanvas = maplibreMapRef.current?.getCanvas();
+    if (maplibreCanvas) {
+      maplibreCanvas.style.cursor = drawingMode ? 'crosshair' : '';
+    }
+  }, [drawingMode, engineMode, mapLibreReady]);
 
   useEffect(() => {
     setLatInput(String(originLat));
@@ -308,10 +425,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
         lat: Number(e.latlng.lat.toFixed(6)),
         lon: Number(e.latlng.lng.toFixed(6)),
       };
-      onUpdateProfileRef.current({
-        ...curr,
-        polygonVertices: [...(curr.polygonVertices ?? []), nextPt],
-      });
+      commitVerticesRef.current([...(curr.polygonVertices ?? []), nextPt]);
     });
 
     const resizeObserver =
@@ -430,7 +544,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
           lat: Number(pos.lat.toFixed(6)),
           lon: Number(pos.lng.toFixed(6)),
         };
-        onUpdateProfileRef.current({ ...curr, polygonVertices: nextVerts });
+        commitVerticesRef.current(nextVerts);
       });
     });
 
@@ -779,10 +893,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
         lat: Number(e.lngLat.lat.toFixed(6)),
         lon: Number(e.lngLat.lng.toFixed(6)),
       };
-      onUpdateProfileRef.current({
-        ...curr,
-        polygonVertices: [...(curr.polygonVertices ?? []), nextPt],
-      });
+      commitVerticesRef.current([...(curr.polygonVertices ?? []), nextPt]);
     });
 
     const resizeObserver =
@@ -859,7 +970,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
           lat: Number(pos.lat.toFixed(6)),
           lon: Number(pos.lng.toFixed(6)),
         };
-        onUpdateProfileRef.current({ ...curr, polygonVertices: nextVerts });
+        commitVerticesRef.current(nextVerts);
       });
       maplibreMarkersRef.current.push(m);
     });
@@ -949,7 +1060,7 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
       [-r * 0.82, -r * 0.35],
     ];
     const generated = offsets.map(([dx, dy]) => localMetersToLatLon(dx, dy, originLat, originLon));
-    onUpdateProfile({ ...profile, polygonVertices: generated });
+    commitVertices(generated);
   };
 
   const handleApplyDelimitedArea = () => {
@@ -1068,11 +1179,12 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
             className={`px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 border transition-all cursor-pointer ${
               drawingMode
                 ? 'bg-amber-400 text-slate-950 border-amber-500 shadow-sm'
-                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700'
+                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700 hover:bg-amber-50 dark:hover:bg-slate-700'
             }`}
+            title="Ative este botão para clicar no mapa e adicionar arestas/vértices do terreno"
           >
             <Pencil className="w-3.5 h-3.5" />
-            {drawingMode ? 'Clicar p/ Marcar Cantos: ON' : 'Marcar Cantos: OFF'}
+            {drawingMode ? 'Adicionar Arestas: ON' : 'Adicionar Arestas'}
           </button>
         </div>
       </div>
@@ -1177,30 +1289,61 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
               className="w-full accent-sky-600 cursor-pointer"
             />
 
-            <div className="grid grid-cols-3 gap-2">
+            <div className="space-y-2">
               <button
                 type="button"
-                onClick={() => onUpdateProfile({ ...profile, polygonVertices: vertices.slice(0, -1) })}
-                disabled={vertices.length === 0}
-                className="py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 font-bold text-slate-700 dark:text-slate-200 inline-flex items-center justify-center gap-1 cursor-pointer"
+                onClick={() => setDrawingMode((v) => !v)}
+                className={`w-full py-2.5 px-3 rounded-xl border text-xs font-bold inline-flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                  drawingMode
+                    ? 'bg-amber-400 text-slate-950 border-amber-500 shadow-sm'
+                    : 'bg-amber-50/70 dark:bg-amber-950/30 border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40'
+                }`}
               >
-                <Undo2 className="w-3.5 h-3.5" /> Desfazer
+                <Pencil className="w-3.5 h-3.5" />
+                {drawingMode ? 'Adicionar Arestas (Ativo — Clique no Mapa)' : '+ Adicionar Arestas no Mapa'}
               </button>
-              <button
-                type="button"
-                onClick={() => onUpdateProfile({ ...profile, polygonVertices: [] })}
-                disabled={vertices.length === 0}
-                className="py-2 rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50/70 dark:bg-rose-950/40 hover:bg-rose-100 disabled:opacity-40 font-bold text-rose-700 dark:text-rose-300 inline-flex items-center justify-center gap-1 cursor-pointer"
-              >
-                <Trash2 className="w-3.5 h-3.5" /> Limpar
-              </button>
-              <button
-                type="button"
-                onClick={handleGenerateFromRadius}
-                className="py-2 rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-950/40 hover:bg-sky-100 font-bold text-sky-800 dark:text-sky-300 inline-flex items-center justify-center gap-1 cursor-pointer"
-              >
-                <RotateCcw className="w-3.5 h-3.5" /> Auto
-              </button>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleUndo}
+                  disabled={!historyState.canUndo && vertices.length === 0}
+                  title="Voltar último ponto/alteração (Ctrl+Z)"
+                  className="py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 font-bold text-slate-700 dark:text-slate-200 inline-flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Undo2 className="w-3.5 h-3.5" /> Voltar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRedo}
+                  disabled={!historyState.canRedo}
+                  title="Refazer (Ctrl+Y)"
+                  className="py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 font-bold text-slate-700 dark:text-slate-200 inline-flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Redo2 className="w-3.5 h-3.5" /> Refazer
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (vertices.length > 0) commitVertices([]);
+                  }}
+                  disabled={vertices.length === 0}
+                  className="py-2 rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50/70 dark:bg-rose-950/40 hover:bg-rose-100 disabled:opacity-40 font-bold text-rose-700 dark:text-rose-300 inline-flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Limpar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerateFromRadius}
+                  className="py-2 rounded-xl border border-sky-200 dark:border-sky-800 bg-sky-50/70 dark:bg-sky-950/40 hover:bg-sky-100 font-bold text-sky-800 dark:text-sky-300 inline-flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Auto
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Atalho: <strong className="text-slate-700 dark:text-slate-200">Ctrl+Z</strong> volta aresta •{' '}
+                <strong className="text-slate-700 dark:text-slate-200">Ctrl+Y</strong> refaz.
+              </p>
             </div>
 
             <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between">
@@ -1314,48 +1457,81 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
                 </span>
               </div>
 
-              {engineMode === 'relief3d' ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <ToggleSwitch
-                    size="sm"
-                    checked={showRunoffArrows}
-                    onChange={setShowRunoffArrows}
-                    activeColor="sky"
-                    label="Setas da Chuva"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => maplibreMapRef.current?.zoomIn()}
-                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 cursor-pointer"
-                    title="Zoom +"
-                  >
-                    <ZoomIn className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => maplibreMapRef.current?.zoomOut()}
-                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 cursor-pointer"
-                    title="Zoom -"
-                  >
-                    <ZoomOut className="w-3.5 h-3.5" />
-                  </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDrawingMode((v) => !v)}
+                  className={`px-2.5 py-1 rounded-lg border font-bold inline-flex items-center gap-1 cursor-pointer transition-all ${
+                    drawingMode
+                      ? 'bg-amber-400 text-slate-950 border-amber-500 shadow-sm'
+                      : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-amber-50'
+                  }`}
+                >
+                  <Pencil className="w-3 h-3" />
+                  {drawingMode ? 'Arestas: ON' : '+ Adicionar Arestas'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUndo}
+                  disabled={!historyState.canUndo && vertices.length === 0}
+                  title="Desfazer última aresta (Ctrl+Z)"
+                  className="px-2 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold hover:bg-slate-100 disabled:opacity-40 inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <Undo2 className="w-3 h-3" /> Voltar (Ctrl+Z)
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRedo}
+                  disabled={!historyState.canRedo}
+                  title="Refazer (Ctrl+Y)"
+                  className="p-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 disabled:opacity-40 cursor-pointer"
+                >
+                  <Redo2 className="w-3 h-3" />
+                </button>
+
+                {engineMode === 'relief3d' ? (
+                  <>
+                    <ToggleSwitch
+                      size="sm"
+                      checked={showRunoffArrows}
+                      onChange={setShowRunoffArrows}
+                      activeColor="sky"
+                      label="Setas da Chuva"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => maplibreMapRef.current?.zoomIn()}
+                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 cursor-pointer"
+                      title="Zoom +"
+                    >
+                      <ZoomIn className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => maplibreMapRef.current?.zoomOut()}
+                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 cursor-pointer"
+                      title="Zoom -"
+                    >
+                      <ZoomOut className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => recenterActiveMap(originLat, originLon)}
+                      className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold hover:bg-slate-100 cursor-pointer"
+                    >
+                      Centralizar 3D
+                    </button>
+                  </>
+                ) : (
                   <button
                     type="button"
                     onClick={() => recenterActiveMap(originLat, originLon)}
                     className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold hover:bg-slate-100 cursor-pointer"
                   >
-                    Centralizar 3D
+                    Centralizar na Sede
                   </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => recenterActiveMap(originLat, originLon)}
-                  className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold hover:bg-slate-100 cursor-pointer"
-                >
-                  Centralizar na Sede
-                </button>
-              )}
+                )}
+              </div>
             </div>
 
             {engineMode === 'leaflet' ? (
@@ -1370,8 +1546,8 @@ export const FarmMap2D3D: React.FC<FarmMap2D3DProps> = ({
 
                 <div className="pointer-events-none absolute bottom-3 left-3 z-[400] bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-[11px] font-bold text-slate-700 dark:text-slate-200 shadow-sm">
                   {drawingMode
-                    ? 'Clique no mapa para marcar novos cantos • Arraste as bolinhas amarelas para ajustar'
-                    : 'Arraste para mover o mapa • Ative "Clicar p/ Marcar Cantos" para desenhar a área'}
+                    ? 'Modo Arestas ATIVO: clique no mapa para marcar cantos • Ctrl+Z volta • Esc sai'
+                    : 'Arraste para navegar no mapa • Clique em "Adicionar Arestas" para marcar cantos'}
                 </div>
               </div>
             ) : (
