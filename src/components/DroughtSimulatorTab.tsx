@@ -9,15 +9,21 @@ import {
   ArrowRightLeft,
   Layers,
   Info,
-  Droplet
+  Droplet,
+  Mountain
 } from 'lucide-react';
 import { PropertyProfile } from '../types';
+import { calculateReliefRainImpact } from '../utils/geoMap';
 
 interface DroughtSimulatorTabProps {
   profile: PropertyProfile;
+  onUpdateProfile?: (updated: PropertyProfile) => void;
 }
 
-export const DroughtSimulatorTab: React.FC<DroughtSimulatorTabProps> = ({ profile }) => {
+export const DroughtSimulatorTab: React.FC<DroughtSimulatorTabProps> = ({
+  profile,
+  onUpdateProfile
+}) => {
   // Drought Simulator state
   const [simulatedDays, setSimulatedDays] = useState<15 | 30 | 60 | 90>(60);
   const [tempAnomalyC, setTempAnomalyC] = useState<number>(2.0);
@@ -30,13 +36,38 @@ export const DroughtSimulatorTab: React.FC<DroughtSimulatorTabProps> = ({ profil
   const [rainEventMm, setRainEventMm] = useState<number>(45);
   const [runoffCoeff, setRunoffCoeff] = useState<number>(profile.catchmentEfficiency);
   const [autoRedistributeRain, setAutoRedistributeRain] = useState<boolean>(true);
+  const [hasContourDitches, setHasContourDitches] = useState<boolean>(false);
+  const [localSlopePct, setLocalSlopePct] = useState<number>(
+    profile.terrainSlopePct ?? (profile.id === 'oeste' ? 4 : 16)
+  );
 
   // Sync catchment area when switching profile
   React.useEffect(() => {
     setCatchmentAreaM2(profile.roofCatchmentAreaM2);
     setRunoffCoeff(profile.catchmentEfficiency);
     setUseOsmoticDeficit(profile.id === 'oeste');
-  }, [profile.id, profile.roofCatchmentAreaM2, profile.catchmentEfficiency]);
+    setLocalSlopePct(profile.terrainSlopePct ?? (profile.id === 'oeste' ? 4 : 16));
+  }, [profile.id, profile.roofCatchmentAreaM2, profile.catchmentEfficiency, profile.terrainSlopePct]);
+
+  const activeSlopePct = profile.terrainSlopePct ?? localSlopePct;
+  const handleSlopeChange = (nextSlope: number) => {
+    setLocalSlopePct(nextSlope);
+    if (onUpdateProfile) {
+      const profileType =
+        nextSlope <= 5
+          ? 'plano'
+          : nextSlope <= 12
+          ? 'ondulado'
+          : nextSlope <= 22
+          ? 'morro'
+          : 'escarpado';
+      onUpdateProfile({
+        ...profile,
+        terrainSlopePct: nextSlope,
+        terrainProfileType: profileType
+      });
+    }
+  };
 
   // Reservoir totals (Apparent vs. Real after Siltation)
   const totalNominalM3 = profile.reservoirs.reduce((acc, r) => acc + r.nominalCapacityM3, 0);
@@ -523,6 +554,185 @@ export const DroughtSimulatorTab: React.FC<DroughtSimulatorTabProps> = ({ profil
           </div>
         </div>
       </div>
+
+      {/* SECTION 3: INFLUÊNCIA DO RELEVO NA INFILTRAÇÃO E ENXURRADA DA CHUVA */}
+      {(() => {
+        const reliefImpact = calculateReliefRainImpact({
+          slopePct: activeSlopePct,
+          rainMm: rainEventMm,
+          cacaoAreaHa: profile.cacaoAreaHa,
+          hasMulchingOrCabruca: useMulching,
+          hasContourDitches,
+          dailyDemandM3: dailySmartAgroCicloM3
+        });
+
+        return (
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div>
+                <span className="text-xs font-bold uppercase tracking-wider text-emerald-700 flex items-center gap-1.5">
+                  <Mountain className="w-4 h-4" />
+                  Hidrologia de Encosta &amp; Relevo da Propriedade
+                </span>
+                <h3 className="text-lg font-bold text-slate-900 mt-1">
+                  Como o Relevo ({activeSlopePct}% de Declividade) Influencia uma Chuva de {rainEventMm} mm
+                </h3>
+                <p className="text-xs text-slate-600">
+                  Terrenos mais inclinados perdem parte da chuva como enxurrada antes dela entrar na raiz do cacau. Ajuste o relevo abaixo (sincronizado com o Mapa 3D):
+                </p>
+              </div>
+              <span
+                className={`self-start md:self-auto px-3 py-1.5 rounded-xl text-xs font-bold border ${
+                  reliefImpact.erosionRisk === 'Alto'
+                    ? 'bg-rose-50 text-rose-800 border-rose-200'
+                    : reliefImpact.erosionRisk === 'Moderado'
+                    ? 'bg-amber-50 text-amber-800 border-amber-200'
+                    : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                }`}
+              >
+                Risco de Erosão / Assoreamento: {reliefImpact.erosionRisk}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+              {/* Controles de Relevo e Manejo do Solo */}
+              <div className="lg:col-span-5 bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3 text-xs">
+                <div className="flex items-center justify-between font-bold text-slate-800">
+                  <span>Declividade Média do Terreno</span>
+                  <span className="text-emerald-700 font-mono">
+                    {activeSlopePct}% ({reliefImpact.slopeLabel})
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[
+                    { label: 'Plano (3%)', val: 3 },
+                    { label: 'Ondulado (10%)', val: 10 },
+                    { label: 'Morro (18%)', val: 18 },
+                    { label: 'Íngreme (28%)', val: 28 }
+                  ].map((p) => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() => handleSlopeChange(p.val)}
+                      className={`py-1.5 px-1 rounded-lg font-bold border text-[11px] transition-all ${
+                        Math.abs(activeSlopePct - p.val) <= 3
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+
+                <input
+                  type="range"
+                  min={1}
+                  max={35}
+                  step={1}
+                  value={activeSlopePct}
+                  onChange={(e) => handleSlopeChange(Number(e.target.value))}
+                  className="w-full accent-emerald-600"
+                />
+
+                <div className="space-y-2 pt-1">
+                  <label className="flex items-center justify-between p-2.5 rounded-lg bg-white border border-slate-200 cursor-pointer">
+                    <span className="font-semibold text-slate-800">Cobertura Morta / Cabruca no Solo</span>
+                    <input
+                      type="checkbox"
+                      checked={useMulching}
+                      onChange={(e) => setUseMulching(e.target.checked)}
+                      className="accent-emerald-600 w-4 h-4"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-2.5 rounded-lg bg-white border border-slate-200 cursor-pointer">
+                    <span className="font-semibold text-slate-800">Caixas Secas / Valas em Curva de Nível</span>
+                    <input
+                      type="checkbox"
+                      checked={hasContourDitches}
+                      onChange={(e) => setHasContourDitches(e.target.checked)}
+                      className="accent-sky-600 w-4 h-4"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* Resultados do Relevo x Chuva */}
+              <div className="lg:col-span-7 space-y-4">
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-xs font-bold">
+                    <span className="text-emerald-800">
+                      Infiltra na Raiz: {reliefImpact.infiltrationPct}% ({reliefImpact.infiltratedMm} mm)
+                    </span>
+                    <span className="text-amber-800">
+                      Escorre Morro Abaixo: {reliefImpact.runoffPct}% ({reliefImpact.runoffMm} mm)
+                    </span>
+                  </div>
+                  <div className="w-full h-4 rounded-full overflow-hidden flex bg-slate-200 border border-slate-300">
+                    <div
+                      style={{ width: `${reliefImpact.infiltrationPct}%` }}
+                      className="bg-emerald-600 h-full transition-all"
+                    />
+                    <div
+                      style={{ width: `${reliefImpact.runoffPct}%` }}
+                      className="bg-amber-500 h-full transition-all"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                  <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200">
+                    <div className="text-emerald-800 font-semibold">Água Retida no Solo</div>
+                    <div className="text-lg font-black text-emerald-950 mt-0.5">
+                      {reliefImpact.infiltratedM3PerHa} m³/ha
+                    </div>
+                    <div className="text-emerald-700 mt-0.5">
+                      Total na roça: {reliefImpact.totalFarmInfiltratedM3.toLocaleString('pt-BR')} m³
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200">
+                    <div className="text-amber-900 font-semibold">Enxurrada na Encosta</div>
+                    <div className="text-lg font-black text-amber-950 mt-0.5">
+                      {reliefImpact.runoffM3PerHa} m³/ha
+                    </div>
+                    <div className="text-amber-800 mt-0.5">
+                      Escoando: {reliefImpact.totalFarmRunoffM3.toLocaleString('pt-BR')} m³
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-sky-50 border border-sky-200">
+                    <div className="text-sky-900 font-semibold">Aproveitável por Gravidade</div>
+                    <div className="text-lg font-black text-sky-950 mt-0.5">
+                      +{reliefImpact.collectibleRunoffM3.toLocaleString('pt-BR')} m³
+                    </div>
+                    <div className="text-sky-700 mt-0.5">
+                      +{reliefImpact.extraIrrigationDaysPossible} dias em caixas/açude
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1">
+                  <div>
+                    <strong>Diagnóstico do Relevo:</strong> {reliefImpact.siltationWarning}
+                  </div>
+                  <div>
+                    <strong>Recomendação Prática:</strong> {reliefImpact.practicalRecommendation}
+                  </div>
+                  <div className="text-[11px] text-slate-500 pt-1 inline-flex items-center gap-1">
+                    <Info className="w-3.5 h-3.5 shrink-0" />
+                    <span>
+                      Simulação ilustrativa baseada em declividade e cobertura superficial; obras de terraceamento/curvas de nível exigem avaliação de agrônomo.
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

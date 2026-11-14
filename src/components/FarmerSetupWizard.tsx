@@ -274,7 +274,26 @@ export const FarmerSetupWizard: React.FC<FarmerSetupWizardProps> = ({
           currentRealVolumeM3: realCisternM3,
           hasCoverOrGeomembrane: true
         }
-      ]
+      ],
+      latitude: regionType === 'ilheus' ? -14.7565 : -11.7462,
+      longitude: regionType === 'ilheus' ? -39.2245 : -44.9102,
+      farmRadiusM: Math.round(Math.sqrt((cacaoAreaHa * 10000) / Math.PI) * 1.15),
+      polygonVertices:
+        regionType === 'ilheus'
+          ? [
+              { lat: -14.7546, lon: -39.2268 },
+              { lat: -14.7542, lon: -39.2225 },
+              { lat: -14.7575, lon: -39.2214 },
+              { lat: -14.7590, lon: -39.2251 },
+              { lat: -14.7572, lon: -39.2276 }
+            ]
+          : [
+              { lat: -11.7430, lon: -44.9138 },
+              { lat: -11.7426, lon: -44.9068 },
+              { lat: -11.7484, lon: -44.9060 },
+              { lat: -11.7498, lon: -44.9112 },
+              { lat: -11.7475, lon: -44.9145 }
+            ]
     };
 
     onApplyNewFarm(regionType, newProfile);

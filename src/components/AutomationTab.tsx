@@ -13,7 +13,12 @@ import {
   Activity,
   Sprout,
   Wrench,
-  Flame
+  Flame,
+  Plus,
+  Scissors,
+  Trash2,
+  Minus,
+  Mountain
 } from 'lucide-react';
 import { PropertyProfile, PhenologicalStage, IrrigationSector } from '../types';
 
@@ -39,10 +44,174 @@ const STAGE_LITERS_MAP: Record<'ilheus' | 'oeste', Record<PhenologicalStage, { l
 
 export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateProfile }) => {
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
+  const [showNewSectorForm, setShowNewSectorForm] = useState<boolean>(false);
+  const [newSectorName, setNewSectorName] = useState<string>('');
+  const [newSectorHa, setNewSectorHa] = useState<number>(3);
+  const [newSectorClone, setNewSectorClone] = useState<string>('CEPEC-2002 / PH-16');
+  const [newSectorStage, setNewSectorStage] = useState<PhenologicalStage>('floracao');
+  const [newSectorTerrain, setNewSectorTerrain] = useState<'baixada' | 'meia_encosta' | 'topo'>('meia_encosta');
+  const [subtractFromLargest, setSubtractFromLargest] = useState<boolean>(true);
 
   const showToast = (msg: string) => {
     setActionFeedback(msg);
     setTimeout(() => setActionFeedback(null), 5000);
+  };
+
+  // Recalcula área de cacau e plantas totais a partir dos talhões
+  const commitSectorsUpdate = (nextSectors: IrrigationSector[], feedback: string) => {
+    const sumHa = Number(nextSectors.reduce((acc, s) => acc + s.areaHa, 0).toFixed(2));
+    const sumPlants = nextSectors.reduce((acc, s) => acc + s.plantsCount, 0);
+    onUpdateProfile({
+      ...profile,
+      cacaoAreaHa: sumHa,
+      totalAreaHa: Math.max(profile.totalAreaHa, sumHa),
+      estimatedPlants: sumPlants,
+      sectors: nextSectors
+    });
+    showToast(feedback);
+  };
+
+  const handleAddSectorPartition = (e: React.FormEvent) => {
+    e.preventDefault();
+    const ha = Math.max(0.5, Number(newSectorHa) || 1);
+    const deficitFactor = profile.automationConfig.osmoticDeficitMode ? 0.85 : 1.0;
+    const baseLiters = STAGE_LITERS_MAP[profile.id][newSectorStage].liters;
+    const litersPerPlant = Math.round(baseLiters * deficitFactor * 10) / 10;
+
+    let updatedSectors = [...profile.sectors];
+    let finalHa = ha;
+
+    if (subtractFromLargest && updatedSectors.length > 0) {
+      // Encontra o maior talhão para dividir os hectares dele
+      let maxIdx = 0;
+      for (let i = 1; i < updatedSectors.length; i++) {
+        if (updatedSectors[i].areaHa > updatedSectors[maxIdx].areaHa) maxIdx = i;
+      }
+      const donor = updatedSectors[maxIdx];
+      const maxSplit = Math.max(0.5, Number((donor.areaHa - 0.5).toFixed(2)));
+      finalHa = Math.min(ha, maxSplit);
+      const remainingDonorHa = Math.max(0.5, Number((donor.areaHa - finalHa).toFixed(2)));
+      const donorPlants = Math.round(remainingDonorHa * profile.plantingDensityPerHa);
+      const donorNomFlow = Math.max(1000, donorPlants * 2);
+
+      updatedSectors[maxIdx] = {
+        ...donor,
+        areaHa: remainingDonorHa,
+        plantsCount: donorPlants,
+        nominalFlowLh: donorNomFlow,
+        measuredFlowLh: Math.round(donorNomFlow * 0.99)
+      };
+    }
+
+    const newPlants = Math.round(finalHa * profile.plantingDensityPerHa);
+    const newNomFlow = Math.max(1000, newPlants * 2);
+    const nextNum = updatedSectors.length + 1;
+    const labelName =
+      newSectorName.trim() ||
+      `Talhão ${String(nextNum).padStart(2, '0')} — ${
+        newSectorTerrain === 'baixada'
+          ? 'Baixada / Várzea'
+          : newSectorTerrain === 'topo'
+          ? 'Topo de Morro'
+          : 'Meia Encosta'
+      }`;
+
+    const newSector: IrrigationSector = {
+      id: `sec-custom-${Date.now()}`,
+      name: labelName,
+      areaHa: finalHa,
+      plantsCount: newPlants,
+      cloneType: newSectorClone.trim() || 'Clone Cacaueiro',
+      stage: newSectorStage,
+      targetLitersPerPlantDay: litersPerPlant,
+      nominalFlowLh: newNomFlow,
+      measuredFlowLh: Math.round(newNomFlow * 0.99),
+      pressureBar: profile.id === 'ilheus' ? 1.8 : 2.0,
+      nominalPressureBar: profile.id === 'ilheus' ? 1.8 : 2.0,
+      valveStatus: 'scheduled',
+      diagnosticStatus: 'ok',
+      diagnosticMessage: 'Nova partição criada! Pronta para receber pulsos automáticos no cabeçal.',
+      soilMoisturePct: 70,
+      osmoticAdjustmentActive: profile.automationConfig.osmoticDeficitMode,
+      terrainZone: newSectorTerrain
+    };
+
+    updatedSectors.push(newSector);
+    setShowNewSectorForm(false);
+    setNewSectorName('');
+    commitSectorsUpdate(
+      updatedSectors,
+      `Partição "${labelName}" (${finalHa} ha • ${newPlants.toLocaleString('pt-BR')} pés) adicionada com sucesso!`
+    );
+  };
+
+  const handleSplitSectorInTwo = (sector: IrrigationSector) => {
+    if (sector.areaHa < 1) {
+      showToast('Este talhão já tem menos de 1 ha; ajuste os hectares diretamente.');
+      return;
+    }
+    const halfA = Number((sector.areaHa / 2).toFixed(2));
+    const halfB = Number((sector.areaHa - halfA).toFixed(2));
+    const plantsA = Math.round(sector.plantsCount * (halfA / sector.areaHa));
+    const plantsB = Math.max(1, sector.plantsCount - plantsA);
+    const nomFlowA = Math.max(500, Math.round(sector.nominalFlowLh * (halfA / sector.areaHa)));
+    const nomFlowB = Math.max(500, sector.nominalFlowLh - nomFlowA);
+    const ratio = sector.nominalFlowLh > 0 ? sector.measuredFlowLh / sector.nominalFlowLh : 0.99;
+
+    const idx = profile.sectors.findIndex((s) => s.id === sector.id);
+    const nextSectors = [...profile.sectors];
+    nextSectors.splice(
+      idx,
+      1,
+      {
+        ...sector,
+        name: `${sector.name.replace(/\s*\(Parte [AB]\)$/i, '')} (Parte A)`,
+        areaHa: halfA,
+        plantsCount: plantsA,
+        nominalFlowLh: nomFlowA,
+        measuredFlowLh: Math.round(nomFlowA * ratio)
+      },
+      {
+        ...sector,
+        id: `${sector.id}-b-${Date.now().toString().slice(-4)}`,
+        name: `${sector.name.replace(/\s*\(Parte [AB]\)$/i, '')} (Parte B)`,
+        areaHa: halfB,
+        plantsCount: plantsB,
+        nominalFlowLh: nomFlowB,
+        measuredFlowLh: Math.round(nomFlowB * 0.99),
+        diagnosticStatus: 'ok',
+        diagnosticMessage: 'Partição B dividida e calibrada automaticamente.'
+      }
+    );
+
+    commitSectorsUpdate(
+      nextSectors,
+      `Talhão dividido em 2 partições: ${halfA} ha + ${halfB} ha!`
+    );
+  };
+
+  const handleResizeSectorHa = (sectorId: string, deltaHa: number) => {
+    const nextSectors = profile.sectors.map((s) => {
+      if (s.id !== sectorId) return s;
+      const nextHa = Math.max(0.5, Number((s.areaHa + deltaHa).toFixed(2)));
+      const nextPlants = Math.round(nextHa * profile.plantingDensityPerHa);
+      const nextNomFlow = Math.max(500, nextPlants * 2);
+      const ratio = s.nominalFlowLh > 0 ? s.measuredFlowLh / s.nominalFlowLh : 0.99;
+      return {
+        ...s,
+        areaHa: nextHa,
+        plantsCount: nextPlants,
+        nominalFlowLh: nextNomFlow,
+        measuredFlowLh: Math.round(nextNomFlow * ratio)
+      };
+    });
+    commitSectorsUpdate(nextSectors, 'Divisão de hectares do talhão atualizada.');
+  };
+
+  const handleDeleteSector = (sectorId: string) => {
+    if (profile.sectors.length <= 1) return;
+    const nextSectors = profile.sectors.filter((s) => s.id !== sectorId);
+    commitSectorsUpdate(nextSectors, 'Partição removida e área total recalculada.');
   };
 
   const toggleAutomationConfig = (key: keyof PropertyProfile['automationConfig']) => {
@@ -344,11 +513,127 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateP
               Altere o estágio da planta para ajustar a lâmina d'água ou simule falhas hidráulicas (entupimento de gotejador vs. mangueira rompida).
             </p>
           </div>
-          <div className="flex items-center gap-2 text-xs font-medium text-slate-600 bg-white px-3 py-1.5 rounded-lg border border-slate-200">
-            <Activity className="w-4 h-4 text-sky-600" />
-            <span>Pressão Nominal no Cabeçal: <strong>{profile.id === 'ilheus' ? '1,8 bar' : '2,0 bar'}</strong></span>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex items-center gap-2 text-xs font-medium text-slate-600 bg-white px-3 py-2 rounded-xl border border-slate-200">
+              <Activity className="w-4 h-4 text-sky-600" />
+              <span>Total: <strong>{profile.cacaoAreaHa} ha</strong> ({profile.sectors.length} talhões)</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowNewSectorForm((v) => !v)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm transition-all"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Novo Talhão / Dividir Hectares</span>
+            </button>
           </div>
         </div>
+
+        {/* Formulário Rápido "+" para Criar / Dividir Talhão */}
+        {showNewSectorForm && (
+          <form
+            onSubmit={handleAddSectorPartition}
+            className="p-5 bg-emerald-50/70 border-b border-emerald-200 space-y-4 text-xs"
+          >
+            <div className="flex items-center justify-between">
+              <div className="font-bold text-sm text-emerald-950 flex items-center gap-2">
+                <Plus className="w-4 h-4 text-emerald-700" />
+                Adicionar Nova Partição de Talhão e Dividir Hectares
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowNewSectorForm(false)}
+                className="text-slate-500 hover:text-slate-800 font-bold"
+              >
+                Cancelar ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              <label className="space-y-1 lg:col-span-2">
+                <span className="font-semibold text-slate-700">Nome do Novo Talhão</span>
+                <input
+                  type="text"
+                  placeholder={`Ex: Talhão ${String(profile.sectors.length + 1).padStart(2, '0')} — Encosta Sul`}
+                  value={newSectorName}
+                  onChange={(e) => setNewSectorName(e.target.value)}
+                  className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="font-semibold text-slate-700">Hectares (ha)</span>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0.5"
+                  value={newSectorHa}
+                  onChange={(e) => setNewSectorHa(Math.max(0.5, Number(e.target.value)))}
+                  className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white font-bold"
+                />
+              </label>
+
+              <label className="space-y-1">
+                <span className="font-semibold text-slate-700">Posição no Relevo</span>
+                <select
+                  value={newSectorTerrain}
+                  onChange={(e) => setNewSectorTerrain(e.target.value as 'baixada' | 'meia_encosta' | 'topo')}
+                  className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white"
+                >
+                  <option value="baixada">Baixada / Várzea</option>
+                  <option value="meia_encosta">Meia Encosta</option>
+                  <option value="topo">Topo de Morro</option>
+                </select>
+              </label>
+
+              <label className="space-y-1">
+                <span className="font-semibold text-slate-700">Estágio do Cacau</span>
+                <select
+                  value={newSectorStage}
+                  onChange={(e) => setNewSectorStage(e.target.value as PhenologicalStage)}
+                  className="w-full border border-slate-300 rounded-xl px-3 py-2 bg-white"
+                >
+                  <option value="mudas">Mudas (&lt;2 anos)</option>
+                  <option value="vegetativo">Vegetativo</option>
+                  <option value="floracao">Floração</option>
+                  <option value="frutificacao">Frutificação</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+              <div className="flex flex-wrap items-center gap-4">
+                <label className="inline-flex items-center gap-2 font-semibold text-slate-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={subtractFromLargest}
+                    onChange={(e) => setSubtractFromLargest(e.target.checked)}
+                    className="accent-emerald-600 w-4 h-4"
+                  />
+                  <span>Descontar esses hectares do maior talhão (dividir área existente)</span>
+                </label>
+
+                <label className="inline-flex items-center gap-2">
+                  <span className="font-semibold text-slate-600">Clone:</span>
+                  <input
+                    type="text"
+                    value={newSectorClone}
+                    onChange={(e) => setNewSectorClone(e.target.value)}
+                    className="border border-slate-300 rounded-lg px-2.5 py-1 bg-white w-36"
+                  />
+                </label>
+              </div>
+
+              <button
+                type="submit"
+                className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold inline-flex items-center justify-center gap-1.5 shadow-sm"
+              >
+                <Plus className="w-4 h-4" />
+                Criar Partição ({Math.round(Math.max(0.5, newSectorHa) * profile.plantingDensityPerHa).toLocaleString('pt-BR')} pés)
+              </button>
+            </div>
+          </form>
+        )}
 
         <div className="divide-y divide-slate-200">
           {profile.sectors.map((sec) => {
@@ -373,9 +658,58 @@ export const AutomationTab: React.FC<AutomationTabProps> = ({ profile, onUpdateP
                   <div className="space-y-2 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-bold text-slate-900 text-base">{sec.name}</span>
-                      <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 font-medium border border-slate-200">
-                        {sec.areaHa} ha • {sec.plantsCount.toLocaleString('pt-BR')} pés ({sec.cloneType})
-                      </span>
+                      <div className="inline-flex items-center gap-1 rounded-full bg-slate-100 text-slate-800 font-semibold border border-slate-200 px-2 py-0.5 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => handleResizeSectorHa(sec.id, -0.5)}
+                          disabled={sec.areaHa <= 0.5}
+                          title="Reduzir 0,5 ha"
+                          className="p-0.5 rounded-full hover:bg-slate-200 disabled:opacity-30"
+                        >
+                          <Minus className="w-3 h-3" />
+                        </button>
+                        <span>
+                          {sec.areaHa} ha • {sec.plantsCount.toLocaleString('pt-BR')} pés ({sec.cloneType})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleResizeSectorHa(sec.id, 0.5)}
+                          title="Adicionar 0,5 ha"
+                          className="p-0.5 rounded-full hover:bg-slate-200"
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
+                      </div>
+                      {sec.terrainZone && (
+                        <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-200">
+                          <Mountain className="w-3 h-3" />
+                          {sec.terrainZone === 'baixada'
+                            ? 'Baixada'
+                            : sec.terrainZone === 'topo'
+                            ? 'Topo de Morro'
+                            : 'Meia Encosta'}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleSplitSectorInTwo(sec)}
+                        disabled={sec.areaHa < 1}
+                        title="Dividir este talhão em 2 partições iguais"
+                        className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-300 disabled:opacity-40"
+                      >
+                        <Scissors className="w-3 h-3" />
+                        Dividir em 2
+                      </button>
+                      {profile.sectors.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteSector(sec.id)}
+                          title="Excluir partição"
+                          className="p-1 rounded-full text-slate-400 hover:text-rose-700 hover:bg-rose-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       {sec.valveStatus === 'open' && (
                         <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
                           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />

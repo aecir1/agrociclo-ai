@@ -2,6 +2,11 @@ export type RegionId = 'ilheus' | 'oeste';
 
 export type PhenologicalStage = 'mudas' | 'vegetativo' | 'floracao' | 'frutificacao';
 
+export interface LatLonPoint {
+  lat: number;
+  lon: number;
+}
+
 export interface IrrigationSector {
   id: string;
   name: string;
@@ -19,6 +24,7 @@ export interface IrrigationSector {
   diagnosticMessage: string;
   soilMoisturePct: number;
   osmoticAdjustmentActive: boolean;
+  terrainZone?: 'baixada' | 'meia_encosta' | 'topo';
 }
 
 export interface ReservoirNode {
@@ -90,4 +96,10 @@ export interface PropertyProfile {
   };
   sectors: IrrigationSector[];
   reservoirs: ReservoirNode[];
+  latitude?: number;
+  longitude?: number;
+  farmRadiusM?: number;
+  polygonVertices?: LatLonPoint[];
+  terrainSlopePct?: number;
+  terrainProfileType?: 'plano' | 'ondulado' | 'morro' | 'escarpado';
 }
